@@ -1,0 +1,19 @@
+[tools]
+# Prebuilt binary via the aqua registry (no local compilation of third-party code).
+cargo-deny = "0.20.2"
+
+[tasks.check]
+description = "Format check, clippy (warnings are errors) and unit tests"
+run = ["cargo fmt --check", "cargo clippy --all-targets -- -D warnings", "cargo test"]
+
+[tasks.e2e]
+description = "Live round-trip on a throwaway trip (needs WANDERLOG_E2E_TRIP_ID and a stored session)"
+run = "cargo test --test e2e -- --ignored --nocapture"
+
+[tasks.install]
+description = "Install the binary into ~/.cargo/bin"
+run = "cargo install --path . --locked"
+
+[tasks.audit]
+description = "Supply-chain policy: RustSec advisories, licenses, bans, sources (needs network)"
+run = "cargo deny check"

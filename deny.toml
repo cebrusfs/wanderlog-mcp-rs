@@ -1,0 +1,37 @@
+# Supply-chain policy for `mise run audit` (cargo-deny). Advisories come from the RustSec
+# database, so this check needs network access; it is kept out of the offline `mise run check`.
+
+[advisories]
+ignore = []
+
+[licenses]
+# Permissive licenses present in the dependency graph (`cargo deny list -l license`).
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "Unicode-3.0",
+  "Unlicense",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+# This crate is unpublished (publish = false) and has no license field.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# Only crates.io: any other registry or git dependency fails the check.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
