@@ -32,7 +32,8 @@ impl Live {
             .into_iter()
             .map(serde_json::from_value)
             .collect::<Result<_, _>>()?;
-        let places = edit::prefetch_places(&self.rest, &edits, &HashMap::new()).await?;
+        let places =
+            edit::prefetch_places(&self.rest, &edits, &mut HashMap::new(), HashMap::new()).await?;
         let mut conn = Connection::open(&self.cookie, &self.key).await?;
         let snap = conn.subscribe().await?;
         let plan = edit::plan(
@@ -119,7 +120,7 @@ async fn live_round_trip_restores_the_trip() -> Result<()> {
     let after = live
         .apply(vec![
             json!({"op": "add_list", "heading": marker}),
-            json!({"op": "add_place", "section": marker, "place_id": place_id, "start_time": "10:00", "end_time": "11:00", "text": marker}),
+            json!({"op": "add_place", "section": marker, "place_id": place_id, "include_photos": true, "start_time": "10:00", "end_time": "11:00", "text": marker}),
             json!({"op": "add_checklist", "section": day_ref, "heading": marker, "items": ["a", "b"]}),
             json!({"op": "update_section", "section": day_ref, "heading": format!("{marker} day")}),
             json!({"op": "rename_trip", "title": format!("{title} {marker}")}),

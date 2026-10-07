@@ -213,7 +213,7 @@ Edit ops for `preview_edits` / `apply_edits` (each edit is one object with `op` 
 
 | op | fields |
 |---|---|
-| `add_place` | `section`, `place_id`, `position?`, `text?`, `start_time?`, `end_time?` |
+| `add_place` | `section`, either `place_id` or `source`, `include_photos?`, `position?`, `text?`, `start_time?`, `end_time?` |
 | `add_note` | `section`, `text`, `position?` |
 | `add_checklist` | `section`, `items`, `heading?` (title), `position?` |
 | `update_block` | `block`, `text?` + `text_mode?` (`replace`/`append`), `start_time?`, `end_time?`, `heading?` (checklist title) |
@@ -230,6 +230,31 @@ takes `b:<id>`. Times are `HH:MM` (24h). Edits in one batch run in order and see
 batch holds at most 100 edits and trips can span at most 90 days. `move_block`/`remove_block` work
 on places, notes and checklists in lists and days.
 
+For a place already in another trip, use `source` instead of looking it up again:
+
+```json
+{
+  "op": "add_place",
+  "section": "Places to visit",
+  "source": {"trip_id": 123, "block": "b:456", "revision": 8},
+  "text": "Candidate from the previous trip"
+}
+```
+
+Use real refs and the source revision from `get_trip`. Each source trip is read once per batch;
+the source block must still exist, and `revision`, when provided, must still match. This reuses
+the place data and saved photos with a new destination block ID. Notes, times, reactions,
+attachments and reservations are not copied; provide `text` and times explicitly when wanted.
+
+`get_trip` and `get_place` populate a cache scoped to the current login and server process.
+Only missing place IDs need a batch lookup, and successful lookups survive a later failure.
+Photo lookup is off by default; `include_photos: true` requests missing photos and reports any
+lookup failure before writing. Saved or cached photos are reused either way. The final edits
+remain one atomic revision, regardless of how many lookup batches were needed.
+
+A real `place_id` obtained through another Maps tool is accepted. Passing an external place
+object to bypass all lookup is not supported yet; see the [API verification limits](docs/protocol.md#place-resolution-verification).
+
 Not supported yet (shown read-only): lodging, flights and transit reservations, budget expenses,
 journal ("visited").
 
@@ -241,6 +266,10 @@ journal ("visited").
 - `did not confirm the edit, so it may or may not have been applied`: the connection dropped after
   sending. Run `get_trip` to check before retrying, so nothing is applied twice.
 - `Wanderlog refused the request (4001)`: rate limited; wait a minute and batch more edits per call.
+- `RATE_LIMITED` / HTTP 429: wait the returned `retry_in_seconds`. The server shares a REST
+  cooldown across calls and never automatically replays a request. Do not split the write or
+  immediately repeat a preview. Structured errors report `write_state: "not_started"` only
+  when this edit call failed before sending a write; `not_reported` makes no such guarantee.
 - `changed since that preview`: someone (or an earlier attempt) edited the trip after
   `preview_edits`; preview again and confirm the new result.
 

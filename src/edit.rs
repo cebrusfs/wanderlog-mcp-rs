@@ -8,7 +8,6 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use futures_util::{StreamExt, TryStreamExt, stream};
 use rmcp::schemars::{self, JsonSchema};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -69,8 +68,26 @@ pub enum TextMode {
     Append,
 }
 
+/// An existing place whose saved data can be reused without a Places API lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(inline)]
+pub struct PlaceSource {
+    pub trip_id: u64,
+    /// A b:<id> ref from the source trip's get_trip response.
+    pub block: String,
+    /// Source revision from get_trip; rejects a changed source when supplied.
+    pub revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PlaceKey {
+    Id(String),
+    Source(PlaceSource),
+}
+
 /// One itinerary edit. Fields used per op:
-/// add_place{section, place_id, position?, text?, start_time?, end_time?};
+/// add_place{section, place_id OR source, include_photos?, position?, text?, start_time?, end_time?};
 /// add_note{section, text, position?}; add_checklist{section, items, heading?, position?};
 /// update_block{block, text?, text_mode?, start_time?, end_time?, heading? (checklist title)};
 /// move_block{block, section, position?}; remove_block{block};
@@ -86,8 +103,13 @@ pub struct Edit {
     pub section: Option<String>,
     /// Target item: a `b:<id>` ref from get_trip.
     pub block: Option<String>,
-    /// add_place: Google place_id returned by search_places. Never invent one.
+    /// add_place: real Google place_id from any trusted place tool, or use source instead. Never invent one.
     pub place_id: Option<String>,
+    /// add_place: reuse an existing place and its saved photos. Supply either source or place_id.
+    /// Notes, times, reservations and attachments are not copied; supply text/times explicitly.
+    pub source: Option<PlaceSource>,
+    /// add_place: fetch missing photo keys (default false). Existing cached/source photos are reused.
+    pub include_photos: Option<bool>,
     /// Plain-text note (add_place/add_note/update_block) or section text (update_section).
     pub text: Option<String>,
     /// How `text` updates an existing note: `replace` (default) or `append` as a new line.
@@ -115,11 +137,68 @@ pub struct Edit {
 pub struct PlaceInfo {
     pub details: Value,
     pub image_keys: Vec<String>,
+    pub photos_loaded: bool,
+}
+
+impl PlaceInfo {
+    pub fn id(&self) -> Option<&str> {
+        str_of(&self.details, "place_id").or_else(|| str_of(&self.details, "placeId"))
+    }
+
+    /// Keep only place data and photo keys, never a source trip's notes or booking information.
+    pub fn from_block(block: &Value) -> Option<Self> {
+        if str_of(block, "type") != Some("place") {
+            return None;
+        }
+        let info = Self {
+            details: block.get("place")?.clone(),
+            image_keys: block
+                .get("imageKeys")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            photos_loaded: block.get("imageKeys").is_some_and(Value::is_array),
+        };
+        if info.id().is_none_or(|id| id.trim().is_empty())
+            || str_of(&info.details, "name").is_none()
+        {
+            return None;
+        }
+        Some(info)
+    }
+}
+
+impl Edit {
+    pub fn place_key(&self) -> Result<PlaceKey> {
+        match (&self.place_id, &self.source) {
+            (Some(id), None) if !id.trim().is_empty() => Ok(PlaceKey::Id(id.trim().to_owned())),
+            (None, Some(source)) if !source.block.trim().is_empty() => {
+                Ok(PlaceKey::Source(source.clone()))
+            }
+            _ => bail!("add_place requires exactly one of place_id or source (trip_id, block)"),
+        }
+    }
+}
+
+pub fn source_place(doc: &Value, source: &PlaceSource) -> Result<PlaceInfo> {
+    if let Some(revision) = source.revision {
+        ensure!(
+            doc.get("overallVersion").and_then(Value::as_u64) == Some(revision),
+            "source trip {} changed since revision {revision}; re-read it before copying",
+            source.trip_id
+        );
+    }
+    let (section, block) = trip::resolve_block(doc, &source.block)?;
+    PlaceInfo::from_block(&blocks(&sections(doc)[section])[block])
+        .context("source block is not a reusable place")
 }
 
 pub struct PlanContext<'a> {
     pub user_id: u64,
-    pub places: &'a HashMap<String, PlaceInfo>,
+    pub places: &'a HashMap<PlaceKey, PlaceInfo>,
 }
 
 #[derive(Debug)]
@@ -141,52 +220,98 @@ pub fn check_batch(edits: &[Edit]) -> Result<()> {
         edits.len() <= MAX_EDITS,
         "at most {MAX_EDITS} edits per batch"
     );
+    for edit in edits {
+        if edit.op == EditOp::AddPlace {
+            edit.place_key()?;
+        } else {
+            ensure!(
+                edit.source.is_none() && edit.include_photos.is_none(),
+                "source and include_photos are only valid for add_place"
+            );
+        }
+    }
     Ok(())
 }
 
-/// Place data for every add_place target: entries already in `known` are reused, the rest are
-/// fetched four at a time (details, plus photo keys best effort like the web client).
+/// Resolve missing IDs in small sequential batches. Save each successful response immediately,
+/// so a later failure does not discard progress. The caller serialises access to `known`.
 pub async fn prefetch_places(
     rest: &Rest,
     edits: &[Edit],
-    known: &HashMap<String, PlaceInfo>,
-) -> Result<HashMap<String, PlaceInfo>> {
+    known: &mut HashMap<String, PlaceInfo>,
+    mut resolved: HashMap<PlaceKey, PlaceInfo>,
+) -> Result<HashMap<PlaceKey, PlaceInfo>> {
     check_batch(edits)?;
     let mut wanted: Vec<String> = Vec::new();
     for edit in edits.iter().filter(|e| e.op == EditOp::AddPlace) {
-        let place_id = edit.place_id.as_deref().map(str::trim).unwrap_or_default();
-        if !place_id.is_empty() && !wanted.iter().any(|w| w == place_id) {
-            wanted.push(place_id.to_owned());
+        if let PlaceKey::Id(id) = edit.place_key()? {
+            if !wanted.contains(&id) {
+                wanted.push(id);
+            }
+        } else {
+            ensure!(
+                resolved.contains_key(&edit.place_key()?),
+                "source place has not been resolved"
+            );
         }
     }
-    let mut places: HashMap<String, PlaceInfo> = wanted
-        .iter()
-        .filter_map(|id| known.get(id).map(|info| (id.clone(), info.clone())))
-        .collect();
     let missing: Vec<String> = wanted
-        .into_iter()
-        .filter(|id| !places.contains_key(id))
+        .iter()
+        .filter(|id| !known.contains_key(*id))
+        .cloned()
         .collect();
-    let fetched: Vec<(String, PlaceInfo)> = stream::iter(missing)
-        .map(|place_id| async move {
-            let details = rest
-                .place_details(&place_id)
-                .await
-                .with_context(|| format!("look up place_id {place_id}"))?;
-            let image_keys = rest.place_photos(&details).await.unwrap_or_default();
-            Ok::<_, anyhow::Error>((
-                place_id,
-                PlaceInfo {
-                    details,
-                    image_keys,
-                },
-            ))
-        })
-        .buffer_unordered(4)
-        .try_collect()
-        .await?;
-    places.extend(fetched);
-    Ok(places)
+    // Five is our conservative request size, not a claimed server limit.
+    for ids in missing.chunks(5) {
+        for details in rest.multiple_place_details(ids).await? {
+            if let Some(id) =
+                str_of(&details, "place_id").filter(|id| ids.iter().any(|wanted| wanted == id))
+                && str_of(&details, "name").is_some_and(|name| !name.trim().is_empty())
+            {
+                known.insert(
+                    id.to_owned(),
+                    PlaceInfo {
+                        details,
+                        image_keys: Vec::new(),
+                        photos_loaded: false,
+                    },
+                );
+            }
+        }
+        let absent: Vec<&str> = ids
+            .iter()
+            .filter(|id| !known.contains_key(*id))
+            .map(String::as_str)
+            .collect();
+        ensure!(
+            absent.is_empty(),
+            "place details missing for {}; nothing written; successful lookups remain cached",
+            absent.join(", ")
+        );
+    }
+    for id in wanted {
+        resolved.insert(PlaceKey::Id(id.clone()), known[&id].clone());
+    }
+    for edit in edits.iter().filter(|e| e.op == EditOp::AddPlace) {
+        let key = edit.place_key()?;
+        let info = resolved.get_mut(&key).context("place data unavailable")?;
+        if !info.photos_loaded
+            && let Some(cached) = info
+                .id()
+                .and_then(|id| known.get(id))
+                .filter(|p| p.photos_loaded)
+        {
+            info.image_keys.clone_from(&cached.image_keys);
+            info.photos_loaded = true;
+        }
+        if !info.photos_loaded && edit.include_photos == Some(true) {
+            info.image_keys = rest.place_photos(&info.details).await?;
+            info.photos_loaded = true;
+            if let Some(id) = info.id() {
+                known.insert(id.to_owned(), info.clone());
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 /// Plan a batch of edits against `doc`.
@@ -305,11 +430,11 @@ impl Step {
         ids: &mut HashSet<u64>,
     ) -> Result<String> {
         let section = self.item_section(edit)?;
-        let place_id = required(&edit.place_id, "place_id")?.trim();
+        let key = edit.place_key()?;
         let info = ctx
             .places
-            .get(place_id)
-            .ok_or_else(|| anyhow!("place_id {place_id} could not be looked up"))?;
+            .get(&key)
+            .ok_or_else(|| anyhow!("place data could not be resolved"))?;
         let id = new_id(ids);
         let mut block = json!({
             "id": id, "type": "place", "place": info.details,
@@ -325,7 +450,7 @@ impl Step {
             block["endTime"] = json!(end);
         }
         let at = self.insert_block(section, edit.position, block)?;
-        let name = str_of(&info.details, "name").unwrap_or(place_id);
+        let name = str_of(&info.details, "name").unwrap_or("?");
         Ok(format!(
             "+ place {} → {} #{} [b:{id}]",
             q(name),
@@ -887,6 +1012,7 @@ fn describe(block: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rest::tests::{login_server, response};
     use crate::trip::{fixture, is_day};
 
     fn day_dates(doc: &Value) -> Vec<String> {
@@ -900,10 +1026,11 @@ mod tests {
     fn run(doc: &Value, edits: Vec<Value>) -> Result<Plan> {
         let mut places = HashMap::new();
         places.insert(
-            "P9".to_owned(),
+            PlaceKey::Id("P9".to_owned()),
             PlaceInfo {
                 details: json!({"name": "Skytree", "place_id": "P9"}),
                 image_keys: vec!["k1".into()],
+                photos_loaded: true,
             },
         );
         let edits: Vec<Edit> = edits
@@ -918,6 +1045,251 @@ mod tests {
                 places: &places,
             },
         )
+    }
+
+    fn place_edits(ids: &[&str]) -> Vec<Edit> {
+        ids.iter()
+            .map(|id| {
+                serde_json::from_value(json!({"op":"add_place", "section":"day:1", "place_id":id}))
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn partial_batches_survive_rate_limiting_and_retry_only_missing_ids() {
+        let first: Vec<Value> = (1..=5)
+            .map(|id| json!({"place_id":format!("P{id}"), "name":"Place"}))
+            .collect();
+        let (base, requests) = login_server(vec![
+            response(
+                "200 OK",
+                "",
+                &json!({"success":true,"data":first}).to_string(),
+            ),
+            response(
+                "429 Too Many Requests",
+                "Retry-After: 0\r\n",
+                "<html>limited</html>",
+            ),
+            response(
+                "200 OK",
+                "",
+                r#"{"success":true,"data":[{"place_id":"P6","name":"Six"}]}"#,
+            ),
+        ])
+        .await;
+        let rest = Rest::for_test(&base).unwrap();
+        let edits = place_edits(&["P1", "P2", "P3", "P4", "P5", "P6", "P1"]);
+        let mut cache = HashMap::new();
+        let error = prefetch_places(&rest, &edits, &mut cache, HashMap::new())
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<crate::rest::RateLimited>().is_some());
+        assert_eq!(cache.len(), 5);
+        let resolved = prefetch_places(&rest, &edits, &mut cache, HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(resolved.len(), 6);
+        let requests = requests.await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.starts_with("GET /api/placesAPI/getMultiplePlaceDetails?"))
+        );
+        assert_eq!(requests[0].matches("placeIds%5B%5D=").count(), 5);
+        for request in &requests[1..] {
+            assert!(request.contains("placeIds%5B%5D=P6"));
+            assert!(!request.contains("=P1"));
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_bulk_entries_keep_successes_without_silent_fallback() {
+        let (base, requests) = login_server(vec![response("200 OK", "",
+            r#"{"success":true,"data":[{"place_id":"P1","name":"One"},null,{"place_id":"P2"},{"place_id":"UNREQUESTED","name":"Other"}]}"#)]).await;
+        let mut cache = HashMap::new();
+        let error = prefetch_places(
+            &Rest::for_test(&base).unwrap(),
+            &place_edits(&["P1", "P2"]),
+            &mut cache,
+            HashMap::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("missing for P2"));
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key("P1"));
+        assert_eq!(requests.await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn photos_are_explicit_and_retained_for_preview_apply_reuse() {
+        let (base, requests) = login_server(vec![
+            response(
+                "200 OK",
+                "",
+                r#"{"success":true,"data":[{"place_id":"P1","name":"One"}]}"#,
+            ),
+            response("200 OK", "", r#"{"success":true,"data":["photo-key"]}"#),
+        ])
+        .await;
+        let rest = Rest::for_test(&base).unwrap();
+        let mut cache = HashMap::new();
+        let mut edits = place_edits(&["P1"]);
+        prefetch_places(&rest, &edits, &mut cache, HashMap::new())
+            .await
+            .unwrap();
+        assert!(!cache["P1"].photos_loaded);
+        edits[0].include_photos = Some(true);
+        prefetch_places(&rest, &edits, &mut cache, HashMap::new())
+            .await
+            .unwrap();
+        prefetch_places(&rest, &edits, &mut cache, HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(cache["P1"].image_keys, ["photo-key"]);
+        let requests = requests.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].starts_with("POST /api/placePhotos/P1 "));
+    }
+
+    #[tokio::test]
+    async fn source_photos_survive_a_later_failure_and_fresh_source_reads() {
+        let (base, requests) = login_server(vec![
+            response("200 OK", "", r#"{"success":true,"data":["photo-one"]}"#),
+            response("429 Too Many Requests", "Retry-After: 0\r\n", "limited"),
+            response("200 OK", "", r#"{"success":true,"data":["photo-two"]}"#),
+        ])
+        .await;
+        let rest = Rest::for_test(&base).unwrap();
+        let mut cache = HashMap::new();
+        let mut sources = HashMap::new();
+        let edits: Vec<Edit> = (1..=2).map(|id| {
+            let edit: Edit = serde_json::from_value(json!({"op":"add_place","section":"day:1","source":{"trip_id":1,"block":format!("b:{id}")},"include_photos":true})).unwrap();
+            let info = PlaceInfo::from_block(&json!({"type":"place","place":{"place_id":format!("P{id}"),"name":"Place"}})).unwrap();
+            cache.insert(format!("P{id}"), info.clone());
+            sources.insert(edit.place_key().unwrap(), info);
+            edit
+        }).collect();
+        assert!(
+            prefetch_places(&rest, &edits, &mut cache, sources.clone())
+                .await
+                .is_err()
+        );
+        assert!(cache["P1"].photos_loaded);
+        assert!(!cache["P2"].photos_loaded);
+        prefetch_places(&rest, &edits, &mut cache, sources.clone())
+            .await
+            .unwrap();
+        let reused = prefetch_places(&rest, &edits, &mut cache, sources)
+            .await
+            .unwrap();
+        assert!(reused.values().all(|info| info.photos_loaded));
+        let requests = requests.await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[0].starts_with("POST /api/placePhotos/P1 "));
+        assert!(
+            requests[1..]
+                .iter()
+                .all(|request| request.starts_with("POST /api/placePhotos/P2 "))
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_photo_results_keep_details_and_do_not_mark_photos_loaded() {
+        for data in [json!(null), json!(["valid", 123])] {
+            let (base, requests) = login_server(vec![response(
+                "200 OK",
+                "",
+                &json!({"success":true,"data":data}).to_string(),
+            )])
+            .await;
+            let mut cache = HashMap::from([(
+                "P1".to_owned(),
+                PlaceInfo {
+                    details: json!({"place_id":"P1","name":"One"}),
+                    image_keys: Vec::new(),
+                    photos_loaded: false,
+                },
+            )]);
+            let mut edits = place_edits(&["P1"]);
+            edits[0].include_photos = Some(true);
+            let error = prefetch_places(
+                &Rest::for_test(&base).unwrap(),
+                &edits,
+                &mut cache,
+                HashMap::new(),
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("place photos:"));
+            assert_eq!(cache.len(), 1);
+            assert!(!cache["P1"].photos_loaded);
+            assert!(cache["P1"].image_keys.is_empty());
+            assert_eq!(requests.await.unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn source_places_preserve_place_data_but_not_private_block_fields() {
+        let mut doc = fixture::doc();
+        doc["overallVersion"] = json!(8);
+        let block = &mut doc["itinerary"]["sections"][1]["blocks"][0];
+        block["imageKeys"] = json!(["photo"]);
+        block["attachments"] = json!([{"secret":"reservation"}]);
+        let original = block.clone();
+        let source = PlaceSource {
+            trip_id: 1,
+            block: format!("b:{}", original["id"]),
+            revision: Some(8),
+        };
+        let info = source_place(&doc, &source).unwrap();
+        let edit: Edit = serde_json::from_value(json!({"op":"add_place", "section":"day:1", "source":{"trip_id":1,"block":source.block,"revision":8}, "text":"New note"})).unwrap();
+        let places = HashMap::from([(PlaceKey::Source(source.clone()), info)]);
+        let planned = plan(
+            &doc,
+            &[edit],
+            &PlanContext {
+                user_id: 7,
+                places: &places,
+            },
+        )
+        .unwrap();
+        let new = &planned.components[0]["li"];
+        assert_eq!(new["place"], original["place"]);
+        assert_eq!(new["imageKeys"], original["imageKeys"]);
+        assert_ne!(new["id"], original["id"]);
+        assert_eq!(new["attachments"], json!([]));
+        assert_eq!(delta_text(&new["text"]), "New note");
+        assert!(
+            source_place(
+                &doc,
+                &PlaceSource {
+                    revision: Some(7),
+                    ..source.clone()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            source_place(
+                &doc,
+                &PlaceSource {
+                    block: "b:9999999".into(),
+                    ..source
+                }
+            )
+            .is_err()
+        );
+        for bad in [
+            json!({"op":"add_place","section":"day:1"}),
+            json!({"op":"add_place","section":"day:1","place_id":"P1","source":{"trip_id":1,"block":"b:1"}}),
+            json!({"op":"add_note","section":"day:1","text":"note","include_photos":true}),
+        ] {
+            assert!(check_batch(&[serde_json::from_value(bad).unwrap()]).is_err());
+        }
     }
 
     #[test]

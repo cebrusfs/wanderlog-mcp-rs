@@ -3,7 +3,8 @@
 //! Endpoints are verified against the official web app (see docs/protocol.md). Request
 //! URLs can contain trip keys, which are bearer secrets, so errors are built without URLs.
 
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use reqwest::header::{ACCEPT, COOKIE, HeaderMap, HeaderValue, ORIGIN, SET_COOKIE};
@@ -15,6 +16,61 @@ pub const BASE: &str = "https://wanderlog.com";
 #[derive(Clone)]
 pub struct Rest {
     http: reqwest::Client,
+    cooldown: Arc<Mutex<Option<Cooldown>>>,
+    #[cfg(test)]
+    base: String,
+}
+
+#[derive(Clone, Copy)]
+struct Cooldown {
+    started: Instant,
+    seconds: u64,
+    retry_after_seconds: Option<u64>,
+}
+
+/// A local cooldown or an HTTP 429; no request is automatically replayed.
+#[derive(Debug)]
+pub struct RateLimited {
+    pub retry_after_seconds: Option<u64>,
+    pub retry_in_seconds: u64,
+}
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Wanderlog rate limited the request (HTTP 429); retry in {} seconds",
+            self.retry_in_seconds
+        )
+    }
+}
+
+impl std::error::Error for RateLimited {}
+
+fn rate_limit(headers: &HeaderMap) -> RateLimited {
+    let retry_after_seconds = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|value| {
+            let value = value.trim();
+            if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+                Some(value.parse::<u64>().unwrap_or(u64::MAX))
+            } else {
+                httpdate::parse_http_date(value).ok().map(|date| {
+                    date.duration_since(SystemTime::now())
+                        .map(|duration| {
+                            duration
+                                .as_secs()
+                                .saturating_add(u64::from(duration.subsec_nanos() > 0))
+                        })
+                        .unwrap_or(0)
+                })
+            }
+        });
+    RateLimited {
+        retry_after_seconds,
+        retry_in_seconds: retry_after_seconds.unwrap_or(60),
+    }
 }
 
 /// A trip the account can open, from the home listing.
@@ -50,7 +106,30 @@ impl Rest {
     pub fn new(cookie: &str) -> Result<Self> {
         Ok(Self {
             http: Self::client(Some(cookie))?,
+            cooldown: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            base: BASE.to_owned(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(base: &str) -> Result<Self> {
+        Ok(Self {
+            http: Self::client(None)?,
+            cooldown: Arc::new(Mutex::new(None)),
+            base: base.to_owned(),
+        })
+    }
+
+    fn base(&self) -> &str {
+        #[cfg(test)]
+        {
+            &self.base
+        }
+        #[cfg(not(test))]
+        {
+            BASE
+        }
     }
 
     fn client(cookie: Option<&str>) -> Result<reqwest::Client> {
@@ -119,11 +198,52 @@ impl Rest {
     }
 
     async fn call(&self, request: RequestBuilder, what: &str) -> Result<Value> {
+        // All REST endpoints share this cooldown, including writes, so clones cannot
+        // continue hammering the account after one endpoint reports a limit.
+        {
+            let mut cooldown = self
+                .cooldown
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(active) = *cooldown {
+                let elapsed = active.started.elapsed().as_secs();
+                if elapsed < active.seconds {
+                    return Err(RateLimited {
+                        retry_after_seconds: active.retry_after_seconds,
+                        retry_in_seconds: active.seconds - elapsed,
+                    }
+                    .into());
+                }
+                *cooldown = None;
+            }
+        }
         let response = request
             .send()
             .await
             .map_err(|e| anyhow!("{what}: {}", e.without_url()))?;
         let status = response.status();
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            let error = rate_limit(response.headers());
+            let mut cooldown = self
+                .cooldown
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let next = Cooldown {
+                started: Instant::now(),
+                seconds: error.retry_in_seconds,
+                retry_after_seconds: error.retry_after_seconds,
+            };
+            // Concurrent responses may extend a cooldown but never shorten it.
+            if cooldown.is_none_or(|active| {
+                active
+                    .seconds
+                    .saturating_sub(active.started.elapsed().as_secs())
+                    <= next.seconds
+            }) {
+                *cooldown = Some(next);
+            }
+            return Err(error.into());
+        }
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             bail!(
                 "{what}: not authorised (HTTP {status}); the Wanderlog session may have expired — run `wanderlog-mcp auth login` or supply a cookie with `auth set`"
@@ -150,13 +270,19 @@ impl Rest {
     }
 
     async fn get(&self, path: &str, query: &[(&str, &str)], what: &str) -> Result<Value> {
-        self.call(self.http.get(format!("{BASE}{path}")).query(query), what)
-            .await
+        self.call(
+            self.http.get(format!("{}{path}", self.base())).query(query),
+            what,
+        )
+        .await
     }
 
     async fn post(&self, path: &str, body: &Value, what: &str) -> Result<Value> {
-        self.call(self.http.post(format!("{BASE}{path}")).json(body), what)
-            .await
+        self.call(
+            self.http.post(format!("{}{path}", self.base())).json(body),
+            what,
+        )
+        .await
     }
 
     /// The logged-in user, or `None` when the cookie is not (or no longer) a logged-in session.
@@ -266,6 +392,33 @@ impl Rest {
             .ok_or_else(|| anyhow!("place details: nothing found for {place_id}"))
     }
 
+    /// Batch Google-style details; the caller owns chunking and partial results.
+    pub async fn multiple_place_details(&self, ids: &[String]) -> Result<Vec<Value>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query: Vec<(&str, &str)> =
+            ids.iter().map(|id| ("placeIds[]", id.as_str())).collect();
+        query.push(("language", "en"));
+        let body = self
+            .get(
+                "/api/placesAPI/getMultiplePlaceDetails",
+                &query,
+                "multiple place details",
+            )
+            .await?;
+        let data = body
+            .get("data")
+            .and_then(Value::as_array)
+            .context("multiple place details: expected a data array")?;
+        // A failed entry must not discard other successful places; the caller checks IDs.
+        Ok(data
+            .iter()
+            .filter(|place| place.is_object())
+            .cloned()
+            .collect())
+    }
+
     /// Wanderlog image keys for a place (stored as `block.imageKeys`; apps show thumbnails from them).
     pub async fn place_photos(&self, place: &Value) -> Result<Vec<String>> {
         let id = place
@@ -279,14 +432,17 @@ impl Rest {
                 "place photos",
             )
             .await?;
-        Ok(body
+        let keys = body
             .get("data")
             .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect())
+            .context("place photos: expected an image key array")?;
+        keys.iter()
+            .map(|key| {
+                key.as_str()
+                    .map(str::to_owned)
+                    .context("place photos: expected string image keys")
+            })
+            .collect()
     }
 
     /// Wanderlog's own place metadata (description, typical visit duration, categories).
@@ -343,7 +499,7 @@ async fn login_response(request: RequestBuilder, what: &str) -> Result<(HeaderMa
         .map_err(|e| anyhow!("{what}: {}", e.without_url()))?;
     let status = response.status();
     if status == StatusCode::TOO_MANY_REQUESTS {
-        bail!("{what}: Wanderlog rate limited the request (HTTP {status}); wait before retrying");
+        return Err(rate_limit(response.headers()).into());
     }
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         bail!(
@@ -396,18 +552,18 @@ fn uuid_v4() -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    fn response(status: &str, headers: &str, body: &str) -> String {
+    pub(crate) fn response(status: &str, headers: &str, body: &str) -> String {
         format!(
             "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",
             body.len()
         )
     }
 
-    async fn login_server(
+    pub(crate) async fn login_server(
         responses: Vec<String>,
     ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -565,6 +721,150 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(err.to_string().contains("cannot be empty"));
+        }
+    }
+
+    #[test]
+    fn retry_after_parses_seconds_dates_and_defaults() {
+        for (raw, expected) in [
+            (None, None),
+            (Some("garbage"), None),
+            (Some("-1"), None),
+            (Some("12"), Some(12)),
+            (Some("0"), Some(0)),
+            (Some("184467440737095516160"), Some(u64::MAX)),
+            (Some("Sun, 06 Nov 1994 08:49:37 GMT"), Some(0)),
+        ] {
+            let mut headers = HeaderMap::new();
+            if let Some(raw) = raw {
+                headers.insert(
+                    reqwest::header::RETRY_AFTER,
+                    HeaderValue::from_str(raw).unwrap(),
+                );
+            }
+            let error = rate_limit(&headers);
+            assert_eq!(error.retry_after_seconds, expected);
+            assert_eq!(error.retry_in_seconds, expected.unwrap_or(60));
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            HeaderValue::from_str(&httpdate::fmt_http_date(
+                SystemTime::now() + Duration::from_secs(120),
+            ))
+            .unwrap(),
+        );
+        assert!(matches!(
+            rate_limit(&headers).retry_after_seconds,
+            Some(119..=120)
+        ));
+    }
+
+    #[tokio::test]
+    async fn html_rate_limit_blocks_clones_without_replaying_post_or_leaking_secrets() {
+        let (base, server) = login_server(vec![response(
+            "429 Too Many Requests",
+            "Retry-After: 120\r\n",
+            "<html>private-cookie trip-secret</html>",
+        )])
+        .await;
+        let rest = Rest::for_test(&base).unwrap();
+        let clone = rest.clone();
+        let error = rest
+            .post(
+                "/api/tripPlans/trip-secret",
+                &json!({"secret":"private-cookie"}),
+                "write",
+            )
+            .await
+            .unwrap_err();
+        let limit = error.downcast_ref::<RateLimited>().unwrap();
+        assert_eq!(limit.retry_after_seconds, Some(120));
+        for secret in [base.as_str(), "trip-secret", "private-cookie", "<html>"] {
+            assert!(!format!("{error:#}").contains(secret));
+        }
+        let error = clone.current_user().await.unwrap_err();
+        assert!(error.downcast_ref::<RateLimited>().is_some());
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("POST "));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_invalid_and_absent_headers_use_default_before_json() {
+        for headers in ["", "Retry-After: invalid\r\n"] {
+            let (base, server) = login_server(vec![response(
+                "429 Too Many Requests",
+                headers,
+                "<html>limited</html>",
+            )])
+            .await;
+            let rest = Rest::for_test(&base).unwrap();
+            let error = rest.current_user().await.unwrap_err();
+            let limit = error.downcast_ref::<RateLimited>().unwrap();
+            assert_eq!(limit.retry_after_seconds, None);
+            assert_eq!(limit.retry_in_seconds, 60);
+            assert_eq!(server.await.unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_cooldown_allows_one_new_request() {
+        let (base, server) = login_server(vec![
+            response("429 Too Many Requests", "Retry-After: 1\r\n", "limited"),
+            response("200 OK", "", r#"{"success":true,"user":{"id":1}}"#),
+        ])
+        .await;
+        let rest = Rest::for_test(&base).unwrap();
+        assert!(
+            rest.current_user()
+                .await
+                .unwrap_err()
+                .downcast_ref::<RateLimited>()
+                .is_some()
+        );
+        {
+            let mut cooldown = rest.cooldown.lock().unwrap();
+            cooldown.as_mut().unwrap().started = Instant::now() - Duration::from_secs(2);
+        }
+        assert_eq!(rest.current_user().await.unwrap().unwrap()["id"], 1);
+        assert_eq!(server.await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn bulk_details_encode_repeated_query_and_validate_response() {
+        let (base, server) = login_server(vec![response(
+            "200 OK",
+            "",
+            r#"{"success":true,"data":[{"place_id":"first"},{"place_id":"second"}]}"#,
+        )])
+        .await;
+        let rest = Rest::for_test(&base).unwrap();
+        assert!(rest.multiple_place_details(&[]).await.unwrap().is_empty());
+        let details = rest
+            .multiple_place_details(&["first/東京".into(), "second&value".into()])
+            .await
+            .unwrap();
+        assert_eq!(details.len(), 2);
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET /api/placesAPI/getMultiplePlaceDetails?placeIds%5B%5D=first%2F%E6%9D%B1%E4%BA%AC&placeIds%5B%5D=second%26value&language=en HTTP/1.1\r\n"));
+        assert!(!requests[0].to_ascii_lowercase().contains("\r\ncookie:"));
+        for data in [json!(null), json!({})] {
+            let (base, server) = login_server(vec![response(
+                "200 OK",
+                "",
+                &json!({"success":true,"data":data}).to_string(),
+            )])
+            .await;
+            assert!(
+                Rest::for_test(&base)
+                    .unwrap()
+                    .multiple_place_details(&["first".into()])
+                    .await
+                    .is_err()
+            );
+            server.await.unwrap();
         }
     }
 

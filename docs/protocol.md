@@ -35,7 +35,8 @@ HTTP tests cover request fields, cookie extraction, session verification, and fa
 
 ## REST (`https://wanderlog.com`)
 
-All responses are `{"success": bool, ...}`; failures carry `messages[]`/`error`.
+Application responses are `{"success": bool, ...}`; failures carry `messages[]`/`error`.
+HTTP errors can instead contain HTML, so status must be checked before parsing JSON.
 
 | Purpose | Request | Notes |
 |---|---|---|
@@ -45,12 +46,52 @@ All responses are `{"success": bool, ...}`; failures carry `messages[]`/`error`.
 | Destination search | `GET /api/geo/autocomplete/{query}` | `data[]{id, name, countryName, latitude, longitude, bounds[w,s,e,n]}` |
 | Place search | `GET /api/placesAPI/autocomplete/v2?request={json}` | json = `{input, sessiontoken: uuid4, location: {longitude, latitude}, radius: metres, language}`; `location` and `radius` are both required (else `success:false`), but only bias results: `0,0` + 50 km still finds places worldwide; results mix `{place_id, structured_formatting}` with `{type: "search"}` rows (no place_id) |
 | Place details | `GET /api/placesAPI/getPlaceDetails/v2?placeId=&language=en` | Google-style object; stored verbatim as `block.place` |
+| Multiple place details | `GET /api/placesAPI/getMultiplePlaceDetails?placeIds[]=ID_A&placeIds[]=ID_B&language=en` | Repeated array parameters (encoded as `placeIds%5B%5D`), not comma-separated; `data[]` keyed by `place_id` |
 | Place photos | `POST /api/placePhotos/{place_id}` body `{place}` | `data[]` image keys → `block.imageKeys` |
 | Place metadata | `GET /api/places/metadata?placeIds=&listId={key}&listType=tripPlan&ensurePlaceDetailsAreFresh=true&includeNeedsBooking=true` | description, `minMinutesSpent`/`maxMinutesSpent`, categories |
 | Create trip | `POST /api/tripPlans` | body `{geoIds:[id], initialMapsPlaceIds:[], initialSections:null, initialEmailId:null, type:"plan", startDate, endDate, privacy:"friends", isMapEmbed:false, title:null, autogenerateItineraryOptions:null, language:"en"}` → `data{key, viewKey, id, title}` |
 
 The web app also calls `/api/tripPlans/{key}/settings`, `/api/recommendations/v2`,
 `/api/flights/*`, analytics and chat endpoints; none are needed here.
+
+### Place resolution verification
+
+Rechecked on 2026-10-08 against the
+[official Places client](https://itin-compiled.azureedge.net/7dc4f271/compiled/8388.main.4d6573227c7f1d.js)
+and three authenticated, read-only API requests: autocomplete, single details, and multiple details.
+All returned HTTP 200 with `success: true`. The multiple-details request used two IDs observed in
+autocomplete; both returned matching `place_id` values. Its objects included `name`,
+`formatted_address`, `geometry.location`, `types`, ratings, hours, website and `photo_urls`, matching
+the single-details representation. No session cookie, trip key or account response is stored here.
+
+The client resolves cache misses in sequential batches of five. That is a conservative client
+choice; the server's maximum batch size and quota accounting are unknown. Missing IDs cause a
+pre-write failure, retaining successful results. A bulk failure never falls back to a burst of
+individual requests.
+
+The [web client's copy helper](https://itin-compiled.azureedge.net/7dc4f271/compiled/2864.main.f6aa6434d09e11.js)
+clones existing blocks and emits JSON0 insertions without calling place details. Its
+[block factory](https://itin-compiled.azureedge.net/7dc4f271/compiled/70.main.9764172e4f181d.js)
+does not require `imageKeys`. This crate reuses only the place payload and photo keys, and creates
+the rest of the destination block independently. User-facing source and photo semantics are in
+the [edit tool guide](../README.md#tools).
+
+Arbitrary external or custom minimal place payloads have not been validated through a live write
+and are not accepted as tool input. This investigation performed no itinerary writes or quota
+stress tests. Automated tests use localhost fixtures, including simulated non-JSON 429 responses.
+
+### HTTP rate limiting
+
+HTTP 429 is recognized before JSON decoding. `Retry-After` accepts seconds or an HTTP-date;
+missing/invalid headers use a local 60-second cooldown, not an inferred server quota. Clones of
+the current REST session share the cooldown across endpoints. Calls during it fail locally with
+the remaining delay; no request, including POST, is automatically replayed. A new login starts
+a new REST session and place cache.
+
+MCP errors retain readable text and add `structuredContent` with `code: "RATE_LIMITED"`,
+`retry_after_seconds` (null without a valid header), `retry_in_seconds`, `stage`, and `write_state`.
+Only errors explicitly caught before an itinerary write carry `write_state: "not_started"`;
+other contexts use `not_reported`. The separate ShareDB unknown-outcome guard still applies.
 
 ## ShareDB (all itinerary edits)
 

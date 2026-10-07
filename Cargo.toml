@@ -10,6 +10,7 @@ publish = false
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+httpdate = "1.0.3"
 keyring = "4.2.0"
 rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "http2", "query"] }
