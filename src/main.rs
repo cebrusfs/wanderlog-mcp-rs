@@ -1,8 +1,8 @@
 //! `wanderlog-mcp`: MCP server (stdio) and CLI for editing Wanderlog trips with AI agents.
 
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 
@@ -46,6 +46,8 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AuthAction {
+    /// Log in with your Wanderlog email and password, then store the verified session cookie.
+    Login,
     /// Read the `connect.sid` cookie value from stdin, verify it logs in, then store it.
     Set,
     /// Check whether a working session is configured.
@@ -58,6 +60,9 @@ enum AuthAction {
 async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Serve { read_only } => serve_stdio(read_only).await,
+        Command::Auth {
+            action: AuthAction::Login,
+        } => auth_login().await,
         Command::Auth {
             action: AuthAction::Set,
         } => auth_set().await,
@@ -93,6 +98,29 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+async fn auth_login() -> Result<()> {
+    ensure!(
+        std::io::stdin().is_terminal(),
+        "run `wanderlog-mcp auth login` in an interactive terminal; password input is hidden"
+    );
+    eprint!("Wanderlog email: ");
+    std::io::stderr().flush()?;
+    let mut email = String::new();
+    std::io::stdin().read_line(&mut email)?;
+    ensure!(!email.trim().is_empty(), "Wanderlog email cannot be empty");
+    let (cookie, user) = {
+        let password = rpassword::prompt_password("Wanderlog password (hidden): ")
+            .context("cannot read a hidden password from this terminal")?;
+        Rest::login(&email, &password).await?
+    };
+    auth::store(&cookie)?;
+    println!(
+        "Saved to the OS credential store. Logged in as {}.",
+        username(&user)
+    );
+    Ok(())
 }
 
 async fn auth_set() -> Result<()> {
@@ -144,7 +172,7 @@ async fn auth_status() -> Result<()> {
             username(&user)
         ),
         None => println!(
-            "The session from {from} is no longer logged in. Run `wanderlog-mcp auth set` with a fresh cookie."
+            "The session from {from} is no longer logged in. Run `wanderlog-mcp auth login` or supply a fresh cookie with `auth set`."
         ),
     }
     Ok(())

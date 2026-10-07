@@ -49,22 +49,31 @@ cargo install --path . --locked     # installs ~/.cargo/bin/wanderlog-mcp
 which wanderlog-mcp                 # note the absolute path for GUI clients below
 ```
 
-## Authenticate (once a year or so)
+## Authenticate
 
-1. Log in at <https://wanderlog.com> in Chrome.
+```sh
+wanderlog-mcp auth login     # prompts for your Wanderlog email and password (password hidden)
+wanderlog-mcp auth status    # → OK: logged in as <username>
+wanderlog-mcp trips          # lists your trips and their ids
+```
+
+Run `auth login` in an interactive terminal. It exchanges your email and password for a session,
+checks that the session is logged in, and saves only the `connect.sid` cookie to the OS credential
+store (Keychain on macOS). The password is used for that login only and is never saved. Failed
+logins leave the previously stored cookie untouched.
+
+If you prefer to provide a cookie, `auth set` accepts one without asking for email or password:
+
+1. Log in at <https://wanderlog.com> in Chrome (including through Google, Apple or Facebook).
 2. Open DevTools → **Application** → **Cookies** → `https://wanderlog.com`, select `connect.sid`
    and copy its **Value** (it starts with `s%3A`).
-3. Store it (the value is verified against Wanderlog before it is saved):
+3. Run `pbpaste | wanderlog-mcp auth set`, or run `wanderlog-mcp auth set` and paste at the hidden
+   prompt. The cookie is verified before it replaces the stored session.
 
-   ```sh
-   pbpaste | wanderlog-mcp auth set     # or run `wanderlog-mcp auth set` and paste (input hidden)
-   wanderlog-mcp auth status            # → OK: logged in as <username>
-   wanderlog-mcp trips                  # lists your trips and their ids
-   ```
-
-The session expires after roughly a year, or when you log out of that browser session; repeat
-these steps then (running MCP servers pick up the new cookie on their next call, no restart
-needed). `wanderlog-mcp auth clear` removes the stored cookie.
+When the session expires, run `auth login` again or provide a fresh cookie with `auth set`.
+Running MCP servers pick up the new cookie on their next call, with no restart needed.
+`wanderlog-mcp auth clear` removes the stored cookie. The optional `WANDERLOG_COOKIE` environment
+variable takes precedence over the credential store.
 
 ## Connect your agent
 

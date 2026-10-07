@@ -1,8 +1,9 @@
 # Wanderlog web-app protocol (as used by this crate)
 
-Wanderlog has no public API. Everything below was observed in live traffic of the official web app
-(Chrome, 2026-10-06) and re-verified with this crate's own client. It is private and may change
-without notice; when it breaks, re-capture the browser flow and update this file first.
+Wanderlog has no public API. This protocol is based on live traffic of the official web app
+(Chrome, 2026-10-06) and re-checks with this crate's own client. Password-login evidence and its
+verification limits are recorded below. The protocol is private and may change without notice;
+when it breaks, re-capture the browser flow and update this file first.
 
 Placeholders: `{key}` = trip edit key (16 lowercase letters), `{id}` = numeric ids.
 
@@ -12,6 +13,25 @@ Placeholders: `{key}` = trip edit key (16 lowercase letters), `{id}` = numeric i
   It authenticates both REST and the WebSocket upgrade.
 - **Trip keys are bearer capabilities**: subscribing to a trip works with the key alone, without any
   cookie. Never expose keys to models or logs; this crate addresses trips by numeric id.
+
+### Password login
+
+Verified against the [official login page](https://wanderlog.com/login) and its
+[public frontend bundle](https://itin-compiled.azureedge.net/7dc4f271/compiled/main.1edee1715a296a.js)
+on 2026-10-08:
+
+- The web client sends `POST /api/user/login` with JSON fields `email`, `password`, and
+  `platform: "web"`, alongside version and analytics metadata. The form uses an email address;
+  username login is not verified.
+- The client expects `{success: true, user: {...}}`; application failures use `messages[]` and
+  `errTypes`. The CLI keeps login errors generic because response bodies may contain credentials.
+- The CLI sends the three fields above, requires `connect.sid` from `Set-Cookie`, then checks
+  `GET /api/user` with only that cookie before saving it. It does not follow redirects or persist
+  the email/password. An unsuccessful login does not replace the stored session.
+
+The successful password-login round trip, login-response `Set-Cookie`, and whether the server
+requires any additional browser metadata have not been verified against a real account. Local
+HTTP tests cover request fields, cookie extraction, session verification, and failure handling.
 
 ## REST (`https://wanderlog.com`)
 

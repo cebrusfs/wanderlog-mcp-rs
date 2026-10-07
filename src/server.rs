@@ -43,7 +43,7 @@ const NEW_TRIP_PRIVACY: &str = "friends";
 
 type CookieLoader = Box<dyn Fn() -> Result<String> + Send + Sync>;
 
-/// The current login, rebuilt whenever the stored cookie changes (e.g. after `auth set`).
+/// The current login, rebuilt whenever the stored cookie changes.
 #[derive(Clone)]
 struct Session {
     cookie: String,
@@ -182,7 +182,7 @@ pub struct CreateTripArgs {
 
 #[tool_router]
 impl WanderlogServer {
-    /// `load_cookie` is called on every tool call, so a fresh `auth set` takes effect immediately.
+    /// `load_cookie` is called on every tool call, so a new session takes effect immediately.
     pub fn new(
         load_cookie: impl Fn() -> Result<String> + Send + Sync + 'static,
         read_only: bool,
@@ -330,7 +330,7 @@ impl WanderlogServer {
         Ok(())
     }
 
-    /// Current login; reloads the cookie each call so a fresh `auth set` applies without restarts.
+    /// Current login; reloads the cookie each call so a new session applies without restarts.
     async fn session(&self) -> Result<Session> {
         let cookie = (self.state.load_cookie)()?;
         let mut cached = self.state.session.lock().await;
@@ -361,7 +361,7 @@ impl WanderlogServer {
             return Ok(id);
         }
         let user = session.rest.current_user().await?.ok_or_else(|| {
-            anyhow!("the stored Wanderlog session is not logged in (expired?); run `wanderlog-mcp auth set`")
+            anyhow!("the stored Wanderlog session is not logged in (expired?); run `wanderlog-mcp auth login` or supply a cookie with `auth set`")
         })?;
         let id = user
             .get("id")

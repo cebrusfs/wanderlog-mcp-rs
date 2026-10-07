@@ -47,7 +47,9 @@ pub fn load() -> Result<(String, Source)> {
     match entry()?.get_password() {
         Ok(raw) => Ok((normalize(&raw)?, Source::Keychain)),
         Err(keyring::Error::NoEntry) => {
-            bail!("no Wanderlog session stored: run `wanderlog-mcp auth set` (or set {ENV_VAR})")
+            bail!(
+                "no Wanderlog session stored: run `wanderlog-mcp auth login`, supply a cookie with `auth set`, or set {ENV_VAR}"
+            )
         }
         Err(e) => Err(e).context("cannot read the Wanderlog session from the OS credential store"),
     }
