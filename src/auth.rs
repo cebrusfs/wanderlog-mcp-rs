@@ -1,6 +1,6 @@
 //! Where the Wanderlog session cookie (`connect.sid`) lives.
 //!
-//! Lookup order: the `WANDERLOG_COOKIE` environment variable (handy for CI or other OSes), then
+//! Lookup order: the `WANDERLOG_COOKIE` environment variable (for injected sessions), then
 //! the OS credential store (Keychain on macOS). The value is a full login session: it is never
 //! printed, logged or passed to models.
 

@@ -1,8 +1,9 @@
 # wanderlog-mcp
 
 Let AI agents read and edit your [Wanderlog](https://wanderlog.com) trips. One Rust binary that is
-both an [MCP](https://modelcontextprotocol.io) server (stdio) and a small CLI. Works with any local
-MCP client: Claude Code, Claude Desktop, Codex CLI / IDE extension, and the ChatGPT desktop app.
+both an [MCP](https://modelcontextprotocol.io) server (stdio) and a small CLI. Connect it to local
+MCP clients such as Claude Code, Claude Desktop Chat, Codex CLI / IDE extension, and local
+Work / Codex conversations in the ChatGPT desktop app.
 
 > **Unofficial.** Wanderlog has no public API. This tool speaks the private API of the Wanderlog
 > web app as observed in its own browser traffic ([docs/protocol.md](docs/protocol.md)). It can
@@ -42,14 +43,106 @@ MCP client: Claude Code, Claude Desktop, Codex CLI / IDE extension, and the Chat
 
 ## Install
 
-Requires Rust 1.89+.
+**Currently macOS only.** The supported authentication workflow depends on macOS Keychain.
+Windows / Linux credential integration and packaging have not been made portable. Supplying
+`WANDERLOG_COOKIE` does not make those platforms supported. Packages contain a native binary for
+one CPU architecture (`arm64` or `x64`), not a universal binary; Apple Silicon is the verified build.
+
+### 1. Build the desktop packages locally
+
+Install **Rust 1.89+**, **Bun**, and **mise**, then open a terminal in this repository's root:
 
 ```sh
-cargo install --path . --locked     # installs ~/.cargo/bin/wanderlog-mcp
+mise run package
+```
+
+This shortcut compiles the Rust server on your Mac, packages it for both clients, and verifies
+the extracted packages. Binaries are generated locally, not committed to this repository.
+The command prints `Artifacts: <output-directory>` and creates these files under `$TMPDIR`:
+
+| Output | Use |
+| --- | --- |
+| `wanderlog-mcp-<version>-macos-<arch>.mcpb` | Install in Claude Desktop |
+| `wanderlog-mcp-<version>-macos-<arch>-openai/` | Ready-to-use OpenAI local marketplace |
+| `wanderlog-mcp-<version>-macos-<arch>-openai.zip` | Archive of that same marketplace folder |
+
+Move the packages you want to keep out of temporary storage, for example into
+`~/Applications/Wanderlog/`. Keep the OpenAI marketplace folder intact: its configuration uses
+relative paths to its bundled executable. Both packages contain that same executable and need
+no Rust or Bun at runtime. Building requires network access for dependencies and schema checks.
+
+### 2. Sign in once
+
+If you already have a session in Keychain, continue to your client below. Otherwise, open a
+terminal in the generated `-openai/` folder and use its bundled executable, even if you only
+plan to install Claude:
+
+```sh
+./plugins/wanderlog-mcp/server/wanderlog-mcp auth login
+./plugins/wanderlog-mcp/server/wanderlog-mcp auth status
+```
+
+Prefer a cookie? Replace `auth login` with `auth set`; it only asks for a cookie. For Claude,
+you can also skip this terminal step and paste the cookie into the extension's optional field
+during installation. See [Authenticate](#authenticate) for cookie retrieval and session renewal.
+
+### 3a. Install in Claude Desktop Chat
+
+1. Open **Settings → Extensions → Advanced settings → Install Extension**.
+2. Select the generated `.mcpb` file matching your Mac's architecture.
+3. Leave **Wanderlog session cookie** blank to use your Keychain session, or paste a `connect.sid`
+   cookie into that sensitive field. The extension has no email/password login form.
+4. Enable the extension, then select **Wanderlog** from **+ → Connectors** in a new chat.
+
+Claude stores a supplied cookie in its own secure storage and passes it as `WANDERLOG_COOKIE`.
+It overrides the shared Keychain session for this extension only; it is not imported into the
+CLI's Keychain item. Clear the extension field to use the shared session again. `auth clear`
+does not clear Claude's setting. Restart the extension's server if requested after a change.
+See [Claude's local MCP guide](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop)
+for the client's installation flow.
+
+### 3b. Install in ChatGPT desktop / OpenAI
+
+For **local Work / Codex conversations**, register the generated `-openai/` folder from its
+permanent location with the Codex CLI. If you downloaded the ZIP, extract it first. Open a
+terminal in the whole marketplace folder (the one containing `.agents/` and `plugins/`), then run:
+
+```sh
+codex plugin marketplace add "$PWD"
+```
+
+Restart ChatGPT desktop, open **Plugins Directory**, choose **Wanderlog local**, and install
+**Wanderlog**. Start a new local Work / Codex conversation with the plugin enabled. The plugin
+uses the Keychain session from step 2; installing it does not sign you in to Wanderlog.
+
+To set up a repository without the registration command, copy the generated
+`.agents/plugins/marketplace.json` and `plugins/wanderlog-mcp/` to those same paths under the
+local repository you open in ChatGPT desktop. In Finder, **Command–Shift–.** shows `.agents`.
+If a marketplace file already exists, merge the generated entry into its `plugins` array instead
+of replacing it. The entry's `source.path` is relative to the repository root. Restart the app
+and install from that marketplace in Plugins Directory as above.
+
+This local plugin does not enable browser/mobile chat or every desktop Chat mode. Availability
+depends on client version and workspace policy. OpenAI documents
+[desktop stdio support](https://learn.chatgpt.com/docs/extend/mcp) and
+[local marketplaces](https://developers.openai.com/plugins/build/plugins#build-your-own-curated-plugin-list).
+Actual client UI installation and live account login have not been verified here; see
+[packaging verification](docs/desktop.md#build-and-verify) for what is checked automatically.
+
+### Standalone CLI (optional)
+
+To put `wanderlog-mcp` on your command line instead of using the bundled executable:
+
+```sh
+mise run install                   # installs ~/.cargo/bin/wanderlog-mcp
 which wanderlog-mcp                 # note the absolute path for GUI clients below
 ```
 
 ## Authenticate
+
+The examples below use the standalone CLI. With a desktop package, run them from its
+marketplace folder using `./plugins/wanderlog-mcp/server/wanderlog-mcp` in place of
+`wanderlog-mcp`.
 
 ```sh
 wanderlog-mcp auth login     # prompts for your Wanderlog email and password (password hidden)
@@ -58,8 +151,8 @@ wanderlog-mcp trips          # lists your trips and their ids
 ```
 
 Run `auth login` in an interactive terminal. It exchanges your email and password for a session,
-checks that the session is logged in, and saves only the `connect.sid` cookie to the OS credential
-store (Keychain on macOS). The password is used for that login only and is never saved. Failed
+checks that the session is logged in, and saves only the `connect.sid` cookie to macOS Keychain.
+The password is used for that login only and is never saved. Failed
 logins leave the previously stored cookie untouched.
 
 If you prefer to provide a cookie, `auth set` accepts one without asking for email or password:
@@ -77,46 +170,32 @@ variable takes precedence over the credential store.
 
 ## Connect your agent
 
-GUI apps do not inherit your shell `PATH`: use the absolute path from `which wanderlog-mcp`
-(shown below as `/Users/<you>/.cargo/bin/wanderlog-mcp`). Add `--read-only` after `serve` for a
-read-only setup.
+Follow [Install](#install) for desktop packages. The following manual setup is also available
+for the standalone CLI.
+
+GUI apps do not inherit your shell `PATH`. These shell commands expand `$HOME` before saving
+the executable's absolute path in the client configuration. If you installed the CLI elsewhere,
+use the path from `command -v wanderlog-mcp`. Add `--read-only` after `serve` for a read-only setup.
 
 **Claude Code** (all projects):
 
 ```sh
-claude mcp add --transport stdio --scope user wanderlog -- /Users/<you>/.cargo/bin/wanderlog-mcp serve
+claude mcp add --transport stdio --scope user wanderlog -- "$HOME/.cargo/bin/wanderlog-mcp" serve
 claude mcp list        # then /mcp inside Claude Code
 ```
 
-**Claude Desktop**: Settings → Developer → Edit Config (`~/Library/Application Support/Claude/claude_desktop_config.json`),
-merge in the entry below, then quit and restart Claude Desktop. Logs: `~/Library/Logs/Claude/mcp-server-wanderlog.log`.
-
-```json
-{
-  "mcpServers": {
-    "wanderlog": { "command": "/Users/<you>/.cargo/bin/wanderlog-mcp", "args": ["serve"] }
-  }
-}
-```
+**Claude Desktop Chat**: follow [the extension installation steps](#3a-install-in-claude-desktop-chat)
+above; its bundled launch configuration needs no user-specific path.
 
 **Codex CLI, Codex IDE extension and the ChatGPT desktop app** share `~/.codex/config.toml`
 (per OpenAI's docs; verified here with Codex CLI):
 
 ```sh
-codex mcp add wanderlog -- /Users/<you>/.cargo/bin/wanderlog-mcp serve
+codex mcp add wanderlog -- "$HOME/.cargo/bin/wanderlog-mcp" serve
 ```
 
-or by hand:
-
-```toml
-[mcp_servers.wanderlog]
-command = "/Users/<you>/.cargo/bin/wanderlog-mcp"
-args = ["serve"]
-```
-
-claude.ai on the web/mobile and ChatGPT on the web can only reach *remote* MCP servers over
-public HTTPS; this project intentionally does not host one (it would put your Wanderlog session on a
-server).
+These local packages do not support browser or mobile chat. They supply no remote MCP endpoint
+or tunnel; see [Install](#install) for the supported conversation surfaces.
 
 ## Tools
 
@@ -169,8 +248,11 @@ journal ("visited").
 
 ```sh
 mise run check         # cargo fmt --check, clippy -D warnings, unit tests
+mise run package       # macOS packages + archive/stdio smoke checks; requires Bun and network
 WANDERLOG_E2E_TRIP_ID=<throwaway trip id> mise run e2e   # live round-trip (trip with dates); restores it
 ```
 
 Unit tests cover the json0 engine, the edit planner (component shapes mirror captured web-client
 ops), rendering, and the tool schemas (flat JSON objects, no `$ref`/`oneOf`, for OpenAI clients).
+The [packaging guide](docs/desktop.md#build-and-verify) describes artifact verification separately
+from live account and desktop UI testing.

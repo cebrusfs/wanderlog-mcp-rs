@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "2.1.2",
+    "ajv": "8.20.0"
+  }
+}

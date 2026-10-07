@@ -17,3 +17,7 @@ run = "cargo install --path . --locked"
 [tasks.audit]
 description = "Supply-chain policy: RustSec advisories, licenses, bans, sources (needs network)"
 run = "cargo deny check"
+
+[tasks.package]
+description = "Build and verify macOS desktop packages in a new temporary directory (requires Bun and network)"
+run = ["bun install --frozen-lockfile", "bun scripts/package.mjs"]
