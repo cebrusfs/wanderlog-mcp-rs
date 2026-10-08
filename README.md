@@ -1,313 +1,175 @@
-# wanderlog-mcp
+# Wanderlog MCP in Rust
 
-Let AI agents read and edit your [Wanderlog](https://wanderlog.com) trips. One Rust binary that is
-both an [MCP](https://modelcontextprotocol.io) server (stdio) and a small CLI. Connect it to local
-MCP clients such as Claude Code, Claude Desktop Chat, Codex CLI / IDE extension, and local
-Work / Codex conversations in the ChatGPT desktop app.
+[![CI](https://github.com/cebrusfs/wanderlog-mcp-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cebrusfs/wanderlog-mcp-rs/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](#install)
 
-> **Unofficial.** Wanderlog has no public API. This tool speaks the private API of the Wanderlog
-> web app as observed in its own browser traffic ([docs/protocol.md](docs/protocol.md)). It can
-> break whenever Wanderlog changes, and automated use may be against Wanderlog's terms. Use it for
-> your own trips, at human pace.
+Connect your AI assistant to [Wanderlog](https://wanderlog.com): browse trips, find places,
+and update itineraries from a conversation. A Rust [MCP](https://modelcontextprotocol.io)
+server and CLI for Claude Code, Claude Desktop, Codex, and local Work / Codex conversations
+in the ChatGPT desktop app.
 
-## How it works
-
-- **Reads** use Wanderlog's REST endpoints (trip list, trip, place search/details).
-- **Edits** go through ShareDB, the realtime engine behind Wanderlog's live collaboration: each
-  `apply_edits` call becomes **one atomic revision**, built from a fresh snapshot. Tripmates see it
-  live, exactly as if you had edited in the app.
-- The agent sees a compact view of each trip with stable refs: `[s:<id>]` for sections (notes,
-  lists, days) and `[b:<id>]` for items, plus 1-based positions used by the edit tools.
-
-## Safety model
-
-- **Your session stays local.** The `connect.sid` cookie lives in the macOS Keychain (or the
-  `WANDERLOG_COOKIE` env var) and is never shown to the model or written to logs.
-- **Trip keys never reach the model.** Wanderlog trip keys work like passwords (anyone holding an
-  edit key can open the trip), so the agent only ever sees numeric trip ids.
-- **Trip text is treated as data.** Notes, names and headings may be written by tripmates or third
-  parties: free text is wrapped in `«…»` (our delimiters neutralised, invisible/bidi characters
-  stripped), other values (dates, times, codes) appear plain only when well-formed and are quoted
-  otherwise, and the server tells the model that quoted text is data, never instructions. As a last
-  step every tool output is scrubbed of trip keys, the session cookie and keys inside Wanderlog
-  share links.
-- **Writes are explicit.** Read tools carry the read-only annotation and `apply_edits` the
-  destructive one, so clients that honour MCP annotations ask before running it (Claude Code asks
-  per tool unless you allow it). The intended flow is `preview_edits` (dry run, shows the exact
-  changes and a `base_revision`) → the user agrees to the goal → one `apply_edits` call for the
-  whole batch with that `base_revision`. If the trip changed in between — a tripmate's edit, or an
-  earlier attempt of the same call — nothing is applied, so retries cannot double-apply.
-- Reservations (lodging, flights, transit) are read-only; `create_trip` always uses Wanderlog's
-  default sharing level ("friends").
-- `serve --read-only` disables every write tool.
+**Unofficial.** This uses Wanderlog's private web API, which may change without notice.
+Use it for your own trips, at human pace; automated use may be against Wanderlog's terms.
 
 ## Install
 
-**Currently macOS only.** The supported authentication workflow depends on macOS Keychain.
-Windows / Linux credential integration and packaging have not been made portable. Supplying
-`WANDERLOG_COOKIE` does not make those platforms supported. Packages contain a native binary for
-one CPU architecture (`arm64` or `x64`), not a universal binary; Apple Silicon is the verified build.
+**macOS only.** Authentication uses macOS Keychain. Apple Silicon is verified; desktop
+packages are built for your Mac's architecture (`arm64` or `x64`). Windows and Linux are
+not supported, including when supplying a cookie through an environment variable.
 
-### 1. Build the desktop packages locally
+Choose the setup for your client:
 
-Install **Rust 1.89+**, **Bun**, and **mise**, then open a terminal in this repository's root:
+| Client | Setup |
+| --- | --- |
+| Claude Code | [Install the CLI and register the server](#cli-and-editor-clients) |
+| Codex CLI / IDE extension | [Install the CLI and register the server](#cli-and-editor-clients) |
+| Claude Desktop Chat | [Build packages and install the extension](#desktop-packages) |
+| ChatGPT desktop | [Build packages and install the local plugin](#desktop-packages), or use the [Codex MCP configuration](#cli-and-editor-clients) |
+
+Both installation paths build from source. Install [Rust](https://www.rust-lang.org/tools/install)
+(minimum version in `Cargo.toml`) and [mise](https://mise.jdx.dev/getting-started.html),
+then clone the repository:
+
+```sh
+git clone https://github.com/cebrusfs/wanderlog-mcp-rs.git
+cd wanderlog-mcp-rs
+```
+
+### CLI and editor clients
+
+Install the binary into `~/.cargo/bin`:
+
+```sh
+mise run install
+```
+
+For **Claude Code**:
+
+```sh
+claude mcp add --transport stdio --scope user wanderlog -- "$HOME/.cargo/bin/wanderlog-mcp" serve
+claude mcp list
+```
+
+For **Codex CLI / IDE extension and local ChatGPT desktop conversations**:
+
+```sh
+codex mcp add wanderlog -- "$HOME/.cargo/bin/wanderlog-mcp" serve
+codex mcp list
+```
+
+Codex and ChatGPT desktop share this [MCP configuration](https://learn.chatgpt.com/docs/extend/mcp).
+If you installed the binary elsewhere, use its absolute path from `command -v wanderlog-mcp`.
+Add `--read-only` after `serve` to disable writes. [Sign in](#sign-in), then start a new conversation.
+
+### Desktop packages
+
+Install Bun as well (the pinned version is in `mise.toml`), then run from the repository:
 
 ```sh
 mise run package
 ```
 
-This shortcut compiles the Rust server on your Mac, packages it for both clients, and verifies
-the extracted packages. Binaries are generated locally, not committed to this repository.
 The command prints `Artifacts: <output-directory>` and creates these files under `$TMPDIR`:
 
 | Output | Use |
 | --- | --- |
-| `wanderlog-mcp-<version>-macos-<arch>.mcpb` | Install in Claude Desktop |
-| `wanderlog-mcp-<version>-macos-<arch>-openai/` | Ready-to-use OpenAI local marketplace |
-| `wanderlog-mcp-<version>-macos-<arch>-openai.zip` | Archive of that same marketplace folder |
+| `wanderlog-mcp-<version>-macos-<arch>.mcpb` | Claude Desktop extension |
+| `wanderlog-mcp-<version>-macos-<arch>-openai/` | ChatGPT desktop local marketplace |
+| `wanderlog-mcp-<version>-macos-<arch>-openai.zip` | Archive of that marketplace folder |
 
-Move the packages you want to keep out of temporary storage, for example into
-`~/Applications/Wanderlog/`. Keep the OpenAI marketplace folder intact: its configuration uses
-relative paths to its bundled executable. Both packages contain that same executable and need
-no Rust or Bun at runtime. Building requires network access for dependencies and schema checks.
+Move the packages you want to keep to a permanent location, such as `~/Applications/Wanderlog/`.
+Keep the marketplace folder intact. The packages contain the server binary, so they need no
+Rust or Bun at runtime. Building requires network access.
 
-### 2. Sign in once
-
-If you already have a session in Keychain, continue to your client below. Otherwise, open a
-terminal in the generated `-openai/` folder and use its bundled executable, even if you only
-plan to install Claude:
-
-```sh
-./plugins/wanderlog-mcp/server/wanderlog-mcp auth login
-./plugins/wanderlog-mcp/server/wanderlog-mcp auth status
-```
-
-Prefer a cookie? Replace `auth login` with `auth set`; it only asks for a cookie. For Claude,
-you can also skip this terminal step and paste the cookie into the extension's optional field
-during installation. See [Authenticate](#authenticate) for cookie retrieval and session renewal.
-
-### 3a. Install in Claude Desktop Chat
+#### Claude Desktop
 
 1. Open **Settings → Extensions → Advanced settings → Install Extension**.
-2. Select the generated `.mcpb` file matching your Mac's architecture.
-3. Leave **Wanderlog session cookie** blank to use your Keychain session, or paste a `connect.sid`
-   cookie into that sensitive field. The extension has no email/password login form.
-4. Enable the extension, then select **Wanderlog** from **+ → Connectors** in a new chat.
+2. Select the `.mcpb` file for your Mac's architecture.
+3. Leave **Wanderlog session cookie** blank to use your Keychain login, or supply a cookie as
+   described under [Sign in](#sign-in).
+4. Enable the extension and choose **Wanderlog** from **+ → Connectors** in a new chat.
 
-Claude stores a supplied cookie in its own secure storage and passes it as `WANDERLOG_COOKIE`.
-It overrides the shared Keychain session for this extension only; it is not imported into the
-CLI's Keychain item. Clear the extension field to use the shared session again. `auth clear`
-does not clear Claude's setting. Restart the extension's server if requested after a change.
 See [Claude's local MCP guide](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop)
-for the client's installation flow.
+if your app's setup screen differs.
 
-### 3b. Install in ChatGPT desktop / OpenAI
+#### ChatGPT desktop
 
-For **local Work / Codex conversations**, register the generated `-openai/` folder from its
-permanent location with the Codex CLI. If you downloaded the ZIP, extract it first. Open a
-terminal in the whole marketplace folder (the one containing `.agents/` and `plugins/`), then run:
+Open a terminal in the permanent `-openai/` marketplace folder (extract the ZIP first if needed):
 
 ```sh
 codex plugin marketplace add "$PWD"
 ```
 
 Restart ChatGPT desktop, open **Plugins Directory**, choose **Wanderlog local**, and install
-**Wanderlog**. Start a new local Work / Codex conversation with the plugin enabled. The plugin
-uses the Keychain session from step 2; installing it does not sign you in to Wanderlog.
+**Wanderlog**. [Sign in](#sign-in), then start a new local Work / Codex conversation with the
+plugin enabled. This requires the Codex CLI for marketplace registration.
 
-To set up a repository without the registration command, copy the generated
-`.agents/plugins/marketplace.json` and `plugins/wanderlog-mcp/` to those same paths under the
-local repository you open in ChatGPT desktop. In Finder, **Command–Shift–.** shows `.agents`.
-If a marketplace file already exists, merge the generated entry into its `plugins` array instead
-of replacing it. The entry's `source.path` is relative to the repository root. Restart the app
-and install from that marketplace in Plugins Directory as above.
+For a repo-scoped installation instead, copy the generated `.agents/plugins/marketplace.json`
+and `plugins/wanderlog-mcp/` to those same paths under the repository you open in ChatGPT desktop.
+Merge an existing marketplace's `plugins` array rather than replacing it. In Finder,
+**Command–Shift–.** shows `.agents`. Restart the app and install from Plugins Directory.
+See OpenAI's [local marketplace guide](https://developers.openai.com/plugins/build/plugins#build-your-own-curated-plugin-list).
 
-This local plugin does not enable browser/mobile chat or every desktop Chat mode. Availability
-depends on client version and workspace policy. OpenAI documents
-[desktop stdio support](https://learn.chatgpt.com/docs/extend/mcp) and
-[local marketplaces](https://developers.openai.com/plugins/build/plugins#build-your-own-curated-plugin-list).
-Actual client UI installation and live account login have not been verified here; see
-[packaging verification](docs/desktop.md#build-and-verify) for what is checked automatically.
+These packages run locally; they do not provide a remote endpoint for browser or mobile chat.
+Client availability depends on your app version and workspace policy.
 
-### Standalone CLI (optional)
+## Sign in
 
-To put `wanderlog-mcp` on your command line instead of using the bundled executable:
+With the CLI installed, run these commands in an interactive terminal:
 
 ```sh
-mise run install                   # installs ~/.cargo/bin/wanderlog-mcp
-which wanderlog-mcp                 # note the absolute path for GUI clients below
+wanderlog-mcp auth login
+wanderlog-mcp auth status
 ```
 
-## Authenticate
+With a desktop package instead, open its `-openai/` folder and replace `wanderlog-mcp` with
+`./plugins/wanderlog-mcp/server/wanderlog-mcp`. This works for Claude Desktop users too.
+The password input is hidden; only the verified session cookie is saved to Keychain.
 
-The examples below use the standalone CLI. With a desktop package, run them from its
-marketplace folder using `./plugins/wanderlog-mcp/server/wanderlog-mcp` in place of
-`wanderlog-mcp`.
+To sign in with a browser cookie (including Google, Apple, or Facebook login):
+
+1. Log in at <https://wanderlog.com> in Chrome.
+2. Open DevTools → **Application → Cookies → https://wanderlog.com** and copy the `connect.sid` value.
+3. Run `pbpaste | wanderlog-mcp auth set`, or `wanderlog-mcp auth set` for a hidden input prompt.
+
+The Claude extension's optional cookie field uses Claude's secure storage and overrides Keychain
+for that extension. Clear the field to use Keychain again; `auth clear` does not clear that field.
+The `WANDERLOG_COOKIE` environment variable also takes precedence over Keychain.
+When a session expires, repeat login or cookie import. `wanderlog-mcp auth clear` removes the
+Keychain session; running MCP servers pick up a renewed session on their next call.
+
+## Use it
+
+Try asking your assistant:
+
+- “List my Wanderlog trips and show the itinerary for my Tokyo trip.”
+- “Find ramen places near this trip's destination.”
+- “Preview adding Tokyo Tower to the second day, then wait for my confirmation.”
+
+You can also browse from the terminal:
 
 ```sh
-wanderlog-mcp auth login     # prompts for your Wanderlog email and password (password hidden)
-wanderlog-mcp auth status    # → OK: logged in as <username>
-wanderlog-mcp trips          # lists your trips and their ids
+wanderlog-mcp trips
+wanderlog-mcp show <trip-id>
 ```
 
-Run `auth login` in an interactive terminal. It exchanges your email and password for a session,
-checks that the session is logged in, and saves only the `connect.sid` cookie to macOS Keychain.
-The password is used for that login only and is never saved. Failed
-logins leave the previously stored cookie untouched.
-
-If you prefer to provide a cookie, `auth set` accepts one without asking for email or password:
-
-1. Log in at <https://wanderlog.com> in Chrome (including through Google, Apple or Facebook).
-2. Open DevTools → **Application** → **Cookies** → `https://wanderlog.com`, select `connect.sid`
-   and copy its **Value** (it starts with `s%3A`).
-3. Run `pbpaste | wanderlog-mcp auth set`, or run `wanderlog-mcp auth set` and paste at the hidden
-   prompt. The cookie is verified before it replaces the stored session.
-
-When the session expires, run `auth login` again or provide a fresh cookie with `auth set`.
-Running MCP servers pick up the new cookie on their next call, with no restart needed.
-`wanderlog-mcp auth clear` removes the stored cookie. The optional `WANDERLOG_COOKIE` environment
-variable takes precedence over the credential store.
-
-## Connect your agent
-
-Follow [Install](#install) for desktop packages. The following manual setup is also available
-for the standalone CLI.
-
-GUI apps do not inherit your shell `PATH`. These shell commands expand `$HOME` before saving
-the executable's absolute path in the client configuration. If you installed the CLI elsewhere,
-use the path from `command -v wanderlog-mcp`. Add `--read-only` after `serve` for a read-only setup.
-
-**Claude Code** (all projects):
-
-```sh
-claude mcp add --transport stdio --scope user wanderlog -- "$HOME/.cargo/bin/wanderlog-mcp" serve
-claude mcp list        # then /mcp inside Claude Code
-```
-
-**Claude Desktop Chat**: follow [the extension installation steps](#3a-install-in-claude-desktop-chat)
-above; its bundled launch configuration needs no user-specific path.
-
-**Codex CLI, Codex IDE extension and the ChatGPT desktop app** share `~/.codex/config.toml`
-(per OpenAI's docs; verified here with Codex CLI):
-
-```sh
-codex mcp add wanderlog -- "$HOME/.cargo/bin/wanderlog-mcp" serve
-```
-
-These local packages do not support browser or mobile chat. They supply no remote MCP endpoint
-or tunnel; see [Install](#install) for the supported conversation surfaces.
-
-## Tools
-
-| Tool | Kind | What it does |
-|---|---|---|
-| `list_trips` | read | Your trips (own, shared with you, friends') with ids |
-| `get_trip` | read | Itinerary with `[s:]`/`[b:]` refs; `detail: "full"` adds place_id + address |
-| `search_places` | read | Real places (Google via Wanderlog), biased to a trip's destination |
-| `get_place` | read | Address, rating, hours, website; with `trip_id` also Wanderlog's description and typical visit length |
-| `preview_edits` | read | Dry run of a batch of edits against the latest revision |
-| `apply_edits` | write | Apply a batch atomically (one revision) |
-| `create_trip` | write | New trip for a destination, optional dates and title (shared with friends, the app default) |
-
-Edit ops for `preview_edits` / `apply_edits` (each edit is one object with `op` plus fields):
-
-| op | fields |
-|---|---|
-| `add_place` | `section`, either `place_id` or `source`, `include_photos?`, `position?`, `text?`, `start_time?`, `end_time?` |
-| `add_note` | `section`, `text`, `position?` |
-| `add_checklist` | `section`, `items`, `heading?` (title), `position?` |
-| `update_block` | `block`, `text?` + `text_mode?` (`replace`/`append`), `start_time?`, `end_time?`, `heading?` (checklist title) |
-| `move_block` | `block`, `section`, `position?` |
-| `remove_block` | `block` |
-| `add_list` | `heading` |
-| `update_section` | `section`, `heading?`, `text?`, `text_mode?` |
-| `remove_section` | `section` (empty lists only) |
-| `rename_trip` | `title` |
-| `set_dates` | `start_date`, `end_date` (days keep their order; shrinking refuses to drop days that still have items) |
-
-`section` accepts `s:<id>`, a day date `YYYY-MM-DD`, `day:<n>`, or a list's exact heading; `block`
-takes `b:<id>`. Times are `HH:MM` (24h). Edits in one batch run in order and see each other; a
-batch holds at most 100 edits and trips can span at most 90 days. `move_block`/`remove_block` work
-on places, notes and checklists in lists and days.
-
-For a place already in another trip, use `source` instead of looking it up again:
-
-```json
-{
-  "op": "add_place",
-  "section": "Places to visit",
-  "source": {"trip_id": 123, "block": "b:456", "revision": 8},
-  "text": "Candidate from the previous trip"
-}
-```
-
-Use real refs and the source revision from `get_trip`. Each source trip is read once per batch;
-the source block must still exist, and `revision`, when provided, must still match. This reuses
-the place data and saved photos with a new destination block ID. Notes, times, reactions,
-attachments and reservations are not copied; provide `text` and times explicitly when wanted.
-
-`get_trip` and `get_place` populate a cache scoped to the current login and server process.
-Only missing place IDs need a batch lookup, and successful lookups survive a later failure.
-Photo lookup is off by default; `include_photos: true` requests missing photos and reports any
-lookup failure before writing. Saved or cached photos are reused either way. The final edits
-remain one atomic revision, regardless of how many lookup batches were needed.
-
-A real `place_id` obtained through another Maps tool is accepted. Passing an external place
-object to bypass all lookup is not supported yet; see the [API verification limits](docs/protocol.md#place-resolution-verification).
-
-Not supported yet (shown read-only): lodging, flights and transit reservations, budget expenses,
-journal ("visited").
+Lodging, flights, transit reservations, budget expenses, and the visited journal are read-only.
+New trips use Wanderlog's default sharing level, **friends**; change it in the app if needed.
+See the [tool reference](docs/tools.md) for supported edits and the safety model.
 
 ## Troubleshooting
 
-- `not authorised` / `not logged in`: the session expired or you logged out; redo **Authenticate**.
-- macOS asks whether `wanderlog-mcp` may use the Keychain item (possible after reinstalling the
-  binary): choose **Always Allow**.
-- `did not confirm the edit, so it may or may not have been applied`: the connection dropped after
-  sending. Run `get_trip` to check before retrying, so nothing is applied twice.
-- `Wanderlog refused the request (4001)`: rate limited; wait a minute and batch more edits per call.
-- `RATE_LIMITED` / HTTP 429: wait the returned `retry_in_seconds`. The server shares a REST
-  cooldown across calls and never automatically replays a request. Do not split the write or
-  immediately repeat a preview. Structured errors report `write_state: "not_started"` only
-  when this edit call failed before sending a write; `not_reported` makes no such guarantee.
-- `changed since that preview`: someone (or an earlier attempt) edited the trip after
-  `preview_edits`; preview again and confirm the new result.
+- **Not logged in:** repeat [Sign in](#sign-in).
+- **Keychain access prompt:** allow the server to access its stored session; reinstalling can trigger another prompt.
+- **Rate limited:** wait for the reported retry delay, or at least a minute if none is given;
+  batch related edits together.
+- **Trip changed since preview:** ask for a new preview before applying edits.
+- **Edit outcome unknown:** check the trip before retrying to avoid duplicate changes.
 
-## Development
+## Documentation
 
-```sh
-mise run ci            # workflow lint + the project checks below; no live API tests
-mise run check         # cargo fmt --check, clippy -D warnings, unit/doc tests
-mise run package       # macOS packages + archive/stdio smoke checks; requires Bun and network
-```
-
-Unit tests cover the json0 engine, the edit planner (component shapes mirror captured web-client
-ops), rendering, and the tool schemas (flat JSON objects, no `$ref`/`oneOf`, for OpenAI clients).
-HTTP and WebSocket tests use local mock servers. `check` selects library, binary, and doc tests
-explicitly; it never runs the live integration target, even if its `#[ignore]` marker changes.
-For optional live validation, set `WANDERLOG_E2E_TRIP_ID` to your own throwaway trip with dates,
-authenticate locally, and run `mise run e2e`. That task talks to Wanderlog and restores the trip
-after its round-trip; it is never invoked by CI.
-
-The [packaging guide](docs/desktop.md#build-and-verify) describes artifact verification separately
-from live account and desktop UI testing.
-
-### GitHub Actions
-
-**CI** (`.github/workflows/ci.yml`) runs on pushes, pull requests, and manual dispatches using a
-macOS runner. It calls `mise run ci`, with no Wanderlog credentials or live API tests. Dependency
-downloads remain available; there is no firewall or network sandbox.
-
-**Desktop packages** (`.github/workflows/release.yml`) is prepared for future releases and is
-**disabled by default**. To use it after the workflow reaches the default branch:
-
-1. Set the repository Actions variable `ENABLE_RELEASE_WORKFLOW` to `true`.
-2. Manually run **Desktop packages** with **publish** unchecked to run CI, build Apple Silicon
-   packages, and upload the `.mcpb`, OpenAI `.zip`, and checksums as a workflow artifact.
-3. When ready to publish, first create and push an existing `v<version>` tag matching
-   `Cargo.toml`. Run the workflow from that tag with **publish** checked. After checks and
-   packaging pass, it verifies the tag still points at the built commit and creates a GitHub
-   Release with those assets. It does not create tags or overwrite an existing release.
-
-Tag pushes alone do not publish. Binaries remain generated artifacts, not repository files.
-The publishing job alone receives `contents: write`; checks and builds use read access.
+- [Tool reference and safety model](docs/tools.md)
+- [Development, checks, and releases](docs/development.md)
+- [Desktop packaging reference](docs/desktop.md)
+- [Wanderlog protocol reference](docs/protocol.md)

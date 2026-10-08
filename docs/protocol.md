@@ -74,7 +74,7 @@ clones existing blocks and emits JSON0 insertions without calling place details.
 [block factory](https://itin-compiled.azureedge.net/7dc4f271/compiled/70.main.9764172e4f181d.js)
 does not require `imageKeys`. This crate reuses only the place payload and photo keys, and creates
 the rest of the destination block independently. User-facing source and photo semantics are in
-the [edit tool guide](../README.md#tools).
+the [edit tool guide](tools.md#tools).
 
 Arbitrary external or custom minimal place payloads have not been validated through a live write
 and are not accepted as tool input. This investigation performed no itinerary writes or quota

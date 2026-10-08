@@ -161,7 +161,7 @@ try {
     plugins: [{ name, source: { source: "local", path: `./plugins/${name}` },
       policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" }, category: "Productivity" }],
   });
-  for (const path of ["README.md", "docs/desktop.md", "docs/protocol.md"]) {
+  for (const path of ["README.md", "docs/tools.md", "docs/development.md", "docs/desktop.md", "docs/protocol.md"]) {
     mkdirSync(dirname(join(marketplace, path)), { recursive: true });
     copyFileSync(join(repo, path), join(marketplace, path));
   }
