@@ -4,6 +4,7 @@ cargo-deny = "0.20.2"
 bun = "1.4.2"
 actionlint = "1.7.12"
 shellcheck = "0.11.0"
+"aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
 
 [tasks.check]
 description = "Format check, clippy (warnings are errors) and unit tests"
@@ -17,6 +18,10 @@ run = [
 [tasks.e2e]
 description = "Live round-trip on a throwaway trip (needs WANDERLOG_E2E_TRIP_ID and a stored session)"
 run = "cargo test --test e2e -- --ignored --nocapture"
+
+[tasks.coverage]
+description = "Unit/mock line coverage as LCOV in $TMPDIR (requires llvm-tools-preview); excludes live e2e"
+run = 'cargo llvm-cov --locked --lib --bins --remap-path-prefix --lcov --output-path "${COVERAGE_FILE:-${TMPDIR:?TMPDIR is required}/wanderlog-mcp-lcov.info}"'
 
 [tasks.install]
 description = "Install the binary into ~/.cargo/bin"

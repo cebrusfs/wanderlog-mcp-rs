@@ -1,6 +1,7 @@
 # Wanderlog MCP in Rust
 
 [![CI](https://github.com/cebrusfs/wanderlog-mcp-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cebrusfs/wanderlog-mcp-rs/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/cebrusfs/wanderlog-mcp-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/cebrusfs/wanderlog-mcp-rs)
 [![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](#install)
 
@@ -14,73 +15,36 @@ Use it for your own trips, at human pace; automated use may be against Wanderlog
 
 ## Install
 
-**macOS only.** Authentication uses macOS Keychain. Apple Silicon is verified; desktop
-packages are built for your Mac's architecture (`arm64` or `x64`). Windows and Linux are
-not supported, including when supplying a cookie through an environment variable.
+**macOS only.** Authentication uses macOS Keychain. Apple Silicon is verified; CI provides
+`arm64` packages, and local builds use your Mac's architecture (`arm64` or `x64`). Windows and
+Linux are not supported, including when supplying a cookie through an environment variable.
 
 Choose the setup for your client:
 
 | Client | Setup |
 | --- | --- |
-| Claude Code | [Install the CLI and register the server](#cli-and-editor-clients) |
-| Codex CLI / IDE extension | [Install the CLI and register the server](#cli-and-editor-clients) |
-| Claude Desktop Chat | [Build packages and install the extension](#desktop-packages) |
-| ChatGPT desktop | [Build packages and install the local plugin](#desktop-packages), or use the [Codex MCP configuration](#cli-and-editor-clients) |
+| Claude Desktop Chat | [Install the extension package (recommended)](#desktop-packages-recommended) |
+| ChatGPT desktop | [Install the local plugin package (recommended)](#desktop-packages-recommended) |
+| Claude Code / Codex CLI / IDE extension | [Install with Cargo and register the server](#cli-installation-alternative) |
 
-Both installation paths build from source. Install [Rust](https://www.rust-lang.org/tools/install)
-(minimum version in `Cargo.toml`) and [mise](https://mise.jdx.dev/getting-started.html),
-then clone the repository:
+### Desktop packages (recommended)
 
-```sh
-git clone https://github.com/cebrusfs/wanderlog-mcp-rs.git
-cd wanderlog-mcp-rs
-```
+Download **desktop-macos-arm64** from the **Artifacts** section of a successful
+[main-branch CI run](https://github.com/cebrusfs/wanderlog-mcp-rs/actions/workflows/ci.yml?query=branch%3Amain).
+GitHub requires signing in to download workflow artifacts; they are retained for seven days.
+Extract the download to access the `.mcpb`, OpenAI `.zip`, and `SHA256SUMS` files. From that folder,
+you can verify the archives with `shasum -a 256 -c SHA256SUMS`.
 
-### CLI and editor clients
-
-Install the binary into `~/.cargo/bin`:
-
-```sh
-mise run install
-```
-
-For **Claude Code**:
-
-```sh
-claude mcp add --transport stdio --scope user wanderlog -- "$HOME/.cargo/bin/wanderlog-mcp" serve
-claude mcp list
-```
-
-For **Codex CLI / IDE extension and local ChatGPT desktop conversations**:
-
-```sh
-codex mcp add wanderlog -- "$HOME/.cargo/bin/wanderlog-mcp" serve
-codex mcp list
-```
-
-Codex and ChatGPT desktop share this [MCP configuration](https://learn.chatgpt.com/docs/extend/mcp).
-If you installed the binary elsewhere, use its absolute path from `command -v wanderlog-mcp`.
-Add `--read-only` after `serve` to disable writes. [Sign in](#sign-in), then start a new conversation.
-
-### Desktop packages
-
-Install Bun as well (the pinned version is in `mise.toml`), then run from the repository:
-
-```sh
-mise run package
-```
-
-The command prints `Artifacts: <output-directory>` and creates these files under `$TMPDIR`:
+For Intel Macs or when no recent CI artifact is available, [build packages locally](#build-packages-locally).
+The packages contain the server binary, so they need no Rust or Bun at runtime.
 
 | Output | Use |
 | --- | --- |
 | `wanderlog-mcp-<version>-macos-<arch>.mcpb` | Claude Desktop extension |
-| `wanderlog-mcp-<version>-macos-<arch>-openai/` | ChatGPT desktop local marketplace |
-| `wanderlog-mcp-<version>-macos-<arch>-openai.zip` | Archive of that marketplace folder |
+| `wanderlog-mcp-<version>-macos-<arch>-openai.zip` | ChatGPT desktop local marketplace; extract before installing |
 
 Move the packages you want to keep to a permanent location, such as `~/Applications/Wanderlog/`.
-Keep the marketplace folder intact. The packages contain the server binary, so they need no
-Rust or Bun at runtime. Building requires network access.
+Keep the extracted marketplace folder intact.
 
 #### Claude Desktop
 
@@ -114,6 +78,54 @@ See OpenAI's [local marketplace guide](https://developers.openai.com/plugins/bui
 These packages run locally; they do not provide a remote endpoint for browser or mobile chat.
 Client availability depends on your app version and workspace policy.
 
+#### Build packages locally
+
+Install [Rust](https://www.rust-lang.org/tools/install) (minimum version in `Cargo.toml`)
+and [mise](https://mise.jdx.dev/getting-started.html). Mise installs the pinned Bun version
+for packaging. Then run:
+
+```sh
+git clone https://github.com/cebrusfs/wanderlog-mcp-rs.git
+cd wanderlog-mcp-rs
+mise install
+mise run package
+```
+
+The command prints `Artifacts: <output-directory>` and creates the packages and an extracted
+`-openai/` marketplace folder under `$TMPDIR`. Move them to a permanent location before installing.
+Building requires network access.
+
+### CLI installation (alternative)
+
+If you prefer an installed binary and manual MCP registration, install
+[Rust](https://www.rust-lang.org/tools/install) (minimum version in `Cargo.toml`), then run:
+
+```sh
+git clone https://github.com/cebrusfs/wanderlog-mcp-rs.git
+cd wanderlog-mcp-rs
+cargo install --path . --locked
+```
+
+This installs `wanderlog-mcp` into `~/.cargo/bin` by default and does not require Bun or mise.
+
+For **Claude Code**:
+
+```sh
+claude mcp add --transport stdio --scope user wanderlog -- "$HOME/.cargo/bin/wanderlog-mcp" serve
+claude mcp list
+```
+
+For **Codex CLI / IDE extension and local ChatGPT desktop conversations**:
+
+```sh
+codex mcp add wanderlog -- "$HOME/.cargo/bin/wanderlog-mcp" serve
+codex mcp list
+```
+
+Codex and ChatGPT desktop share this [MCP configuration](https://learn.chatgpt.com/docs/extend/mcp).
+If you installed the binary elsewhere, use its absolute path from `command -v wanderlog-mcp`.
+Add `--read-only` after `serve` to disable writes. [Sign in](#sign-in), then start a new conversation.
+
 ## Sign in
 
 With the CLI installed, run these commands in an interactive terminal:
@@ -123,7 +135,7 @@ wanderlog-mcp auth login
 wanderlog-mcp auth status
 ```
 
-With a desktop package instead, open its `-openai/` folder and replace `wanderlog-mcp` with
+With a desktop package instead, extract the OpenAI ZIP, open its `-openai/` folder, and replace `wanderlog-mcp` with
 `./plugins/wanderlog-mcp/server/wanderlog-mcp`. This works for Claude Desktop users too.
 The password input is hidden; only the verified session cookie is saved to Keychain.
 

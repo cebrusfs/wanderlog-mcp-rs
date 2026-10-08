@@ -1,0 +1,60 @@
+name: Coverage
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: macOS unit and mock coverage
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - name: Install Rust coverage tools
+        run: rustup toolchain install stable --profile minimal --component llvm-tools-preview
+      - name: Collect unit and mock coverage
+        run: TMPDIR="$RUNNER_TEMP" mise run coverage
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-lcov
+          path: ${{ runner.temp }}/wanderlog-mcp-lcov.info
+          if-no-files-found: error
+          retention-days: 7
+
+  upload:
+    name: Upload main coverage to Codecov
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-lcov
+          path: ${{ runner.temp }}/coverage
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: ${{ runner.temp }}/coverage/wanderlog-mcp-lcov.info
+          disable_search: true
+          fail_ci_if_error: true

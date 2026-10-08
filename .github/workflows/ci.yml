@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
   workflow_call:
+    outputs:
+      package_tag:
+        description: Version tag corresponding to the packaged Cargo version
+        value: ${{ jobs.package.outputs.tag }}
 
 permissions:
   contents: read
@@ -29,3 +33,44 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - name: Validate workflows and run unit/doc tests
         run: mise run ci
+
+  package:
+    name: macOS desktop packages
+    needs: check
+    runs-on: macos-15
+    timeout-minutes: 25
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - name: Install Rust build tools
+        run: rustup toolchain install stable --profile minimal
+      - name: Read package version
+        id: metadata
+        run: |
+          # shellcheck disable=SC2016
+          bun -e '
+            import { appendFileSync } from "node:fs";
+            const { version } = Bun.TOML.parse(await Bun.file("Cargo.toml").text()).package;
+            appendFileSync(process.env.GITHUB_OUTPUT, `tag=v${version}\n`);
+          '
+      - name: Build and verify packages
+        run: TMPDIR="$RUNNER_TEMP" mise run package
+      - name: Stage archives and checksums
+        run: |
+          mkdir "$RUNNER_TEMP/release-assets"
+          cp "$RUNNER_TEMP"/wanderlog-mcp-packages-*/*.mcpb \
+             "$RUNNER_TEMP"/wanderlog-mcp-packages-*/*.zip "$RUNNER_TEMP/release-assets/"
+          cd "$RUNNER_TEMP/release-assets"
+          shasum -a 256 ./*.mcpb ./*.zip > SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-macos-arm64
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 7

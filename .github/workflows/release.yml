@@ -1,6 +1,6 @@
 name: Desktop packages
 
-# No tag/push trigger. An unset repository variable keeps every job disabled.
+# Publishing remains opt-in; ordinary CI builds downloadable packages automatically.
 on:
   workflow_dispatch:
     inputs:
@@ -21,66 +21,17 @@ jobs:
     if: vars.ENABLE_RELEASE_WORKFLOW == 'true'
     uses: ./.github/workflows/ci.yml
 
-  build:
-    if: vars.ENABLE_RELEASE_WORKFLOW == 'true'
-    needs: checks
-    runs-on: macos-15
-    timeout-minutes: 25
-    outputs:
-      tag: ${{ steps.metadata.outputs.tag }}
-    env:
-      RUSTUP_TOOLCHAIN: stable
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
-      - name: Install Rust build tools
-        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      - name: Validate release identity
-        id: metadata
-        env:
-          REQUEST_PUBLISH: ${{ inputs.publish }}
-          RELEASE_REF_TYPE: ${{ github.ref_type }}
-          RELEASE_REF_NAME: ${{ github.ref_name }}
-        run: |
-          # JavaScript template strings must reach Bun without shell expansion.
-          # shellcheck disable=SC2016
-          bun -e '
-            import { appendFileSync } from "node:fs";
-            const { version } = Bun.TOML.parse(await Bun.file("Cargo.toml").text()).package;
-            const tag = `v${version}`;
-            if (process.env.REQUEST_PUBLISH === "true" &&
-                (process.env.RELEASE_REF_TYPE !== "tag" || process.env.RELEASE_REF_NAME !== tag)) {
-              throw new Error(`Publishing requires running from the existing tag ${tag}`);
-            }
-            appendFileSync(process.env.GITHUB_OUTPUT, `tag=${tag}\n`);
-          '
-      - name: Build and verify packages locally
-        run: TMPDIR="$RUNNER_TEMP" mise run package
-      - name: Stage archives and checksums
-        run: |
-          mkdir "$RUNNER_TEMP/release-assets"
-          cp "$RUNNER_TEMP"/wanderlog-mcp-packages-*/*.mcpb \
-             "$RUNNER_TEMP"/wanderlog-mcp-packages-*/*.zip "$RUNNER_TEMP/release-assets/"
-          cd "$RUNNER_TEMP/release-assets"
-          shasum -a 256 ./*.mcpb ./*.zip > SHA256SUMS
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: desktop-macos-arm64
-          path: ${{ runner.temp }}/release-assets/*
-          if-no-files-found: error
-          retention-days: 7
-
   publish:
     if: vars.ENABLE_RELEASE_WORKFLOW == 'true' && inputs.publish
-    needs: build
+    needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      RELEASE_TAG: ${{ needs.checks.outputs.package_tag }}
+      RELEASE_REF_TYPE: ${{ github.ref_type }}
+      RELEASE_REF_NAME: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -89,6 +40,8 @@ jobs:
           path: ${{ runner.temp }}/release-assets
       - name: Verify assets and publish the existing tag
         run: |
+          test "$RELEASE_REF_TYPE" = tag
+          test "$RELEASE_REF_NAME" = "$RELEASE_TAG"
           cd "$RUNNER_TEMP/release-assets"
           sha256sum --check SHA256SUMS
           tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags/$RELEASE_TAG" --jq .sha)

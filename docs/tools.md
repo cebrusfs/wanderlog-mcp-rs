@@ -81,4 +81,4 @@ Content limits and new-trip sharing defaults are listed in the [user guide](../R
   changes and a `base_revision`) → the user agrees to the goal → one `apply_edits` call for the
   whole batch with that `base_revision`. If the trip changed in between — a tripmate's edit, or an
   earlier attempt of the same call — nothing is applied, so retries cannot double-apply.
-- For a server with all writes disabled, use the [read-only setup](../README.md#cli-and-editor-clients).
+- For a server with all writes disabled, use the [read-only setup](../README.md#cli-installation-alternative).

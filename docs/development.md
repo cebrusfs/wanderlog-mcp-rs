@@ -21,6 +21,7 @@ See the [tool reference](tools.md) for edit semantics and output safeguards, and
 ```sh
 mise run ci            # workflow lint + the project checks below; no live API tests
 mise run check         # cargo fmt --check, clippy -D warnings, unit/doc tests
+mise run coverage      # unit/mock LCOV report; requires llvm-tools-preview
 mise run package       # macOS packages + archive/stdio smoke checks; requires Bun and network
 ```
 
@@ -35,18 +36,40 @@ after its round-trip; it is never invoked by CI.
 The [packaging guide](desktop.md#build-and-verify) describes artifact verification separately
 from live account and desktop UI testing.
 
+### Coverage
+
+Install the active Rust toolchain's coverage component with
+`mise exec -- rustup component add llvm-tools-preview`, then run `mise run coverage`.
+Mise pins `cargo-llvm-cov`; the task selects only library and binary unit/mock tests, excluding
+live integration tests and doctests. Source paths are relative to the repository so reports are
+portable between runners. It writes line coverage to `$TMPDIR/wanderlog-mcp-lcov.info`.
+Set `COVERAGE_FILE` to override the report path. No minimum coverage percentage is enforced.
+
 ### GitHub Actions
 
 **CI** (`.github/workflows/ci.yml`) runs on pushes, pull requests, and manual dispatches using a
 macOS runner. It calls `mise run ci`, with no Wanderlog credentials or live API tests. Dependency
-downloads remain available; there is no firewall or network sandbox.
+downloads remain available; there is no firewall or network sandbox. After checks pass, it runs
+`mise run package` and uploads Apple Silicon `.mcpb`, OpenAI `.zip`, and SHA256 checksums as
+**desktop-macos-arm64** for seven days. See the [README](../README.md#desktop-packages-recommended)
+for downloading and installing these packages.
 
-**Desktop packages** (`.github/workflows/release.yml`) is prepared for future releases and is
-**disabled by default**. To use it after the workflow reaches the default branch:
+**Coverage** (`.github/workflows/coverage.yml`) runs `mise run coverage` on pushes, pull requests,
+and manual dispatches, retaining **coverage-lcov** for seven days. Successful main-branch runs
+upload that report to [Codecov](https://codecov.io/gh/cebrusfs/wanderlog-mcp-rs). Connect the public
+repository in Codecov before the first upload; no `CODECOV_TOKEN` secret is needed because the
+upload uses [GitHub OIDC](https://github.com/codecov/codecov-action#using-oidc). Only the main-branch
+upload job receives `id-token: write`; test jobs use read access, and pull requests do not upload.
+The README badge shows main-branch line coverage after Codecov processes the first report.
+Upload failures fail the Coverage workflow; they do not block the separate CI/package workflow.
+
+**Desktop packages** (`.github/workflows/release.yml`) reuses CI's checks and packages for manual
+releases. This manual workflow remains **disabled by default**. To use it after the workflow
+reaches the default branch:
 
 1. Set the repository Actions variable `ENABLE_RELEASE_WORKFLOW` to `true`.
 2. Manually run **Desktop packages** with **publish** unchecked to run CI, build Apple Silicon
-   packages, and upload the `.mcpb`, OpenAI `.zip`, and checksums as a workflow artifact.
+   packages, and upload the same workflow artifact as ordinary CI.
 3. When ready to publish, first create and push an existing `v<version>` tag matching
    `Cargo.toml`. Run the workflow from that tag with **publish** checked. After checks and
    packaging pass, it verifies the tag still points at the built commit and creates a GitHub

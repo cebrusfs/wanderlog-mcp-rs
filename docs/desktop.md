@@ -40,5 +40,5 @@ permissions and binary equality, resolves Claude's empty and supplied cookie set
 official library, and compares MCP initialization and tool discovery against the release binary.
 Smoke processes receive a dummy cookie and never call Wanderlog tools or access the Keychain.
 This does not prove successful account login or installation in the clients' actual UI; those
-remain manual checks. Packages are local development artifacts, not notarized releases or
+remain manual checks. Packages are generated locally or by CI; they are not notarized or
 public marketplace submissions. macOS or an organization's extension policy may block them.
