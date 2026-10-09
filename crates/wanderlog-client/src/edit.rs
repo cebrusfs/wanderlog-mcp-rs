@@ -1012,7 +1012,7 @@ fn describe(block: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rest::tests::{login_server, response};
+    use crate::test_support::{login_server, response};
     use crate::trip::{fixture, is_day};
 
     fn day_dates(doc: &Value) -> Vec<String> {
