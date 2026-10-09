@@ -33,10 +33,44 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - name: Validate workflows and run unit/doc tests
         run: mise run ci
+      - name: Keychain adapter round trip (synthetic account)
+        run: cargo test -p wanderlog-mcp --locked --features native-keychain-tests --test native_keychain -- --ignored
+
+  client:
+    name: Portable client (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust checks
+        run: rustup toolchain install stable --profile minimal --component clippy
+      - name: Check the client without MCP feature unification
+        run: |
+          cargo clippy -p wanderlog-client --all-targets --no-default-features --locked -- -D warnings
+          cargo test -p wanderlog-client --no-default-features --locked
+          cargo doc -p wanderlog-client --no-default-features --no-deps --locked
+      - name: Reject application dependencies in the client
+        run: |
+          cargo tree -p wanderlog-client --edges normal --prefix none --format '{p}' > "$RUNNER_TEMP/client-deps.txt"
+          if grep -E '^(rmcp|clap|keyring|rpassword) ' "$RUNNER_TEMP/client-deps.txt"; then
+            echo "Application dependency leaked into wanderlog-client" >&2
+            exit 1
+          fi
 
   package:
     name: macOS desktop packages
-    needs: check
+    needs: [check, client]
     runs-on: macos-15
     timeout-minutes: 25
     outputs:
@@ -56,7 +90,7 @@ jobs:
           # shellcheck disable=SC2016
           bun -e '
             import { appendFileSync } from "node:fs";
-            const { version } = Bun.TOML.parse(await Bun.file("Cargo.toml").text()).package;
+            const { version } = Bun.TOML.parse(await Bun.file("Cargo.toml").text()).workspace.package;
             appendFileSync(process.env.GITHUB_OUTPUT, `tag=v${version}\n`);
           '
       - name: Build and verify packages

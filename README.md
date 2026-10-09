@@ -18,6 +18,7 @@ Use it for your own trips, at human pace; automated use may be against Wanderlog
 **macOS only.** Authentication uses macOS Keychain. Apple Silicon is verified; CI provides
 `arm64` packages, and local builds use your Mac's architecture (`arm64` or `x64`). Windows and
 Linux are not supported, including when supplying a cookie through an environment variable.
+The [`wanderlog-client`](crates/wanderlog-client) library itself is portable.
 
 Choose the setup for your client:
 
@@ -103,7 +104,7 @@ If you prefer an installed binary and manual MCP registration, install
 ```sh
 git clone https://github.com/cebrusfs/wanderlog-mcp-rs.git
 cd wanderlog-mcp-rs
-cargo install --path . --locked
+cargo install --path crates/wanderlog-mcp --locked
 ```
 
 This installs `wanderlog-mcp` into `~/.cargo/bin` by default and does not require Bun or mise.

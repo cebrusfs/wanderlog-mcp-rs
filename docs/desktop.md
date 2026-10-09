@@ -29,7 +29,7 @@ adapter includes a credential or the build machine's absolute path.
 
 ## Build and verify
 
-`Cargo.toml` owns the name, version, and description. `scripts/package.mjs` generates both client
+`crates/wanderlog-mcp/Cargo.toml` owns the name and description; the workspace `Cargo.toml` owns the version. `scripts/package.mjs` generates both client
 manifests, derives Claude's tool metadata from the compiled server, and copies that one binary.
 It validates MCPB with the pinned official packer and OpenAI manifests against the versioned
 [Agent Plugins schemas](https://agent-plugins.org/specification). Packaging requires network

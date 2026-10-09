@@ -2245,6 +2245,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -2507,22 +2508,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "wanderlog-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "httpdate",
+ "percent-encoding",
+ "rand",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "wanderlog-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "futures-util",
- "httpdate",
  "keyring",
- "rand",
- "reqwest",
+ "percent-encoding",
  "rmcp",
  "rpassword",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "wanderlog-client",
 ]
 
 [[package]]

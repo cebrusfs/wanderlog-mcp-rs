@@ -6,6 +6,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::clock::{Clock, SystemClock};
+use crate::errors::{AuthenticationFailed, OutcomeUnknown};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use reqwest::header::{ACCEPT, COOKIE, HeaderMap, HeaderValue, ORIGIN, SET_COOKIE};
 use reqwest::{RequestBuilder, StatusCode};
@@ -17,8 +19,9 @@ pub const BASE: &str = "https://wanderlog.com";
 pub struct Rest {
     http: reqwest::Client,
     cooldown: Arc<Mutex<Option<Cooldown>>>,
-    #[cfg(test)]
     base: String,
+    cookie: String,
+    clock: Arc<dyn Clock>,
 }
 
 #[derive(Clone, Copy)]
@@ -47,7 +50,7 @@ impl std::fmt::Display for RateLimited {
 
 impl std::error::Error for RateLimited {}
 
-fn rate_limit(headers: &HeaderMap) -> RateLimited {
+fn rate_limit_at(headers: &HeaderMap, now: SystemTime) -> RateLimited {
     let retry_after_seconds = headers
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|header| header.to_str().ok())
@@ -57,7 +60,7 @@ fn rate_limit(headers: &HeaderMap) -> RateLimited {
                 Some(value.parse::<u64>().unwrap_or(u64::MAX))
             } else {
                 httpdate::parse_http_date(value).ok().map(|date| {
-                    date.duration_since(SystemTime::now())
+                    date.duration_since(now)
                         .map(|duration| {
                             duration
                                 .as_secs()
@@ -104,35 +107,45 @@ impl std::fmt::Debug for TripSummary {
 
 impl Rest {
     pub fn new(cookie: &str) -> Result<Self> {
+        Self::with_base_url(cookie, BASE)
+    }
+    /// Explicit endpoint injection. TLS is required except on literal loopback hosts.
+    /// Custom origins receive the supplied credentials. Redirects are never followed.
+    pub fn with_base_url(cookie: &str, base: &str) -> Result<Self> {
+        let url = validate_endpoint(base, "https", "http")?;
+        ensure!(
+            url.path() == "/" && url.query().is_none(),
+            "API base URL must be an origin"
+        );
+        let cookie = if cookie.is_empty() {
+            String::new()
+        } else {
+            crate::session::normalize(cookie)?
+        };
         Ok(Self {
-            http: Self::client(Some(cookie))?,
+            http: Self::client(
+                (!cookie.is_empty()).then_some(cookie.as_str()),
+                is_loopback(&url),
+            )?,
             cooldown: Arc::new(Mutex::new(None)),
-            #[cfg(test)]
-            base: BASE.to_owned(),
+            base: url.as_str().trim_end_matches('/').to_owned(),
+            cookie,
+            clock: Arc::new(SystemClock),
         })
     }
-
+    /// Clones share cooldown state. Configure the injected clock before making requests.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
     #[cfg(test)]
     pub(crate) fn for_test(base: &str) -> Result<Self> {
-        Ok(Self {
-            http: Self::client(None)?,
-            cooldown: Arc::new(Mutex::new(None)),
-            base: base.to_owned(),
-        })
+        Self::with_base_url("", base)
     }
-
     fn base(&self) -> &str {
-        #[cfg(test)]
-        {
-            &self.base
-        }
-        #[cfg(not(test))]
-        {
-            BASE
-        }
+        &self.base
     }
-
-    fn client(cookie: Option<&str>) -> Result<reqwest::Client> {
+    fn client(cookie: Option<&str>, local: bool) -> Result<reqwest::Client> {
         let mut headers = HeaderMap::new();
         if let Some(cookie) = cookie {
             let mut session = HeaderValue::from_str(&format!("connect.sid={cookie}"))
@@ -142,29 +155,41 @@ impl Rest {
         }
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         headers.insert(ORIGIN, HeaderValue::from_static(BASE));
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .default_headers(headers)
             .user_agent(crate::USER_AGENT)
             .timeout(Duration::from_secs(30))
             // URLs carry trip keys: never leak them in a Referer, and never follow redirects
             // (the API does not use them, and a cross-host hop would get the key).
             .referer(false)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
-        Ok(http)
+            .redirect(reqwest::redirect::Policy::none());
+        if local {
+            builder = builder.no_proxy();
+        }
+        Ok(builder.build()?)
     }
 
     /// Exchange a Wanderlog email and password for a verified session, without persisting either.
     pub async fn login(email: &str, password: &str) -> Result<(String, Value)> {
-        Self::login_at(BASE, email, password).await
+        Self::login_with_base_url(BASE, email, password).await
     }
 
-    async fn login_at(base: &str, email: &str, password: &str) -> Result<(String, Value)> {
+    pub async fn login_with_base_url(
+        base: &str,
+        email: &str,
+        password: &str,
+    ) -> Result<(String, Value)> {
         let email = email.trim();
         ensure!(!email.is_empty(), "Wanderlog email cannot be empty");
         ensure!(!password.is_empty(), "Wanderlog password cannot be empty");
 
-        let http = Self::client(None)?;
+        let url = validate_endpoint(base, "https", "http")?;
+        ensure!(
+            url.path() == "/" && url.query().is_none(),
+            "API base URL must be an origin"
+        );
+        let base = url.as_str().trim_end_matches('/');
+        let http = Self::client(None, is_loopback(&url))?;
         let (headers, _) = login_response(
             http.post(format!("{base}/api/user/login")).json(&json!({
                 "email": email,
@@ -180,13 +205,13 @@ impl Rest {
             .filter_map(|header| header.to_str().ok())
             .rfind(|value| value.starts_with("connect.sid="))
             .context("Wanderlog did not return a connect.sid session cookie")?;
-        let cookie =
-            crate::auth::normalize(raw).context("Wanderlog returned an invalid session cookie")?;
+        let cookie = crate::session::normalize(raw)
+            .context("Wanderlog returned an invalid session cookie")?;
 
         // A successful response (or an anonymous cookie) alone does not prove authentication.
         // Verify using only the new cookie before the caller can replace the stored session.
         let (_, body) = login_response(
-            Self::client(Some(&cookie))?.get(format!("{base}/api/user")),
+            Self::client(Some(&cookie), is_loopback(&url))?.get(format!("{base}/api/user")),
             "verify login",
         )
         .await?;
@@ -201,12 +226,13 @@ impl Rest {
         // All REST endpoints share this cooldown, including writes, so clones cannot
         // continue hammering the account after one endpoint reports a limit.
         {
-            let mut cooldown = self
-                .cooldown
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut cooldown = self.cooldown.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(active) = *cooldown {
-                let elapsed = active.started.elapsed().as_secs();
+                let elapsed = self
+                    .clock
+                    .now()
+                    .saturating_duration_since(active.started)
+                    .as_secs();
                 if elapsed < active.seconds {
                     return Err(RateLimited {
                         retry_after_seconds: active.retry_after_seconds,
@@ -217,19 +243,42 @@ impl Rest {
                 *cooldown = None;
             }
         }
-        let response = request
-            .send()
+        let request = request
+            .build()
+            .map_err(|_| anyhow!("{what}: invalid request"))?;
+        let write =
+            request.method() == reqwest::Method::POST && request.url().path() == "/api/tripPlans";
+        let mut secrets = vec![self.cookie.clone()];
+        // Trip keys are 10–16 letters; shorter segments (such as `home`) are routes, not secrets.
+        if let Some(key) = request.url().path().strip_prefix("/api/tripPlans/")
+            && key.len() >= 8
+        {
+            secrets.push(key.to_owned());
+        }
+        for (name, value) in request.url().query_pairs() {
+            if name == "listId" {
+                secrets.push(value.into_owned());
+            }
+        }
+        let classify = |message: String| {
+            if write {
+                anyhow::Error::new(OutcomeUnknown(message))
+            } else {
+                anyhow!("{message}")
+            }
+        };
+        let response = self
+            .http
+            .execute(request)
             .await
-            .map_err(|e| anyhow!("{what}: {}", e.without_url()))?;
+            .map_err(|e| classify(redact(&format!("{what}: {}", e.without_url()), &secrets)))?;
         let status = response.status();
         if status == StatusCode::TOO_MANY_REQUESTS {
-            let error = rate_limit(response.headers());
-            let mut cooldown = self
-                .cooldown
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let error = rate_limit_at(response.headers(), self.clock.system_time());
+            let mut cooldown = self.cooldown.lock().unwrap_or_else(|e| e.into_inner());
+            let now = self.clock.now();
             let next = Cooldown {
-                started: Instant::now(),
+                started: now,
                 seconds: error.retry_in_seconds,
                 retry_after_seconds: error.retry_after_seconds,
             };
@@ -237,7 +286,7 @@ impl Rest {
             if cooldown.is_none_or(|active| {
                 active
                     .seconds
-                    .saturating_sub(active.started.elapsed().as_secs())
+                    .saturating_sub(now.saturating_duration_since(active.started).as_secs())
                     <= next.seconds
             }) {
                 *cooldown = Some(next);
@@ -245,15 +294,24 @@ impl Rest {
             return Err(error.into());
         }
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            bail!(
-                "{what}: not authorised (HTTP {status}); the Wanderlog session may have expired — run `wanderlog-mcp auth login` or supply a cookie with `auth set`"
-            );
+            return Err(AuthenticationFailed {
+                status: status.as_u16(),
+            }
+            .into());
         }
         let body: Value = response.json().await.map_err(|e| {
-            anyhow!(
-                "{what}: unreadable response (HTTP {status}): {}",
-                e.without_url()
-            )
+            let message = redact(
+                &format!(
+                    "{what}: unreadable response (HTTP {status}): {}",
+                    e.without_url()
+                ),
+                &secrets,
+            );
+            if write && (status.is_success() || status.is_server_error()) {
+                classify(message)
+            } else {
+                anyhow!("{message}")
+            }
         })?;
         if !status.is_success() || body.get("success") == Some(&Value::Bool(false)) {
             let message = body
@@ -261,10 +319,18 @@ impl Rest {
                 .or_else(|| body.get("error"))
                 .and_then(Value::as_str)
                 .unwrap_or("unknown error");
-            bail!(
-                "{what}: HTTP {status}: {}",
-                crate::render::quote(message, Default::default())
+            let message = redact(
+                &format!(
+                    "{what}: HTTP {status}: {}",
+                    crate::render::quote(message, Default::default())
+                ),
+                &secrets,
             );
+            return Err(if write && status.is_server_error() {
+                classify(message)
+            } else {
+                anyhow!("{message}")
+            });
         }
         Ok(body)
     }
@@ -337,7 +403,7 @@ impl Rest {
     pub async fn trip(&self, key: &str) -> Result<Value> {
         // Without clientSchemaVersion=2 the server answers "app version too old".
         self.get(
-            &format!("/api/tripPlans/{key}"),
+            &format!("/api/tripPlans/{}", encode_segment(key)),
             &[("clientSchemaVersion", "2")],
             "load trip",
         )
@@ -486,8 +552,19 @@ impl Rest {
         let response = self.post("/api/tripPlans", &body, "create trip").await?;
         response
             .get("data")
+            .filter(|data| {
+                data.get("id").and_then(Value::as_u64).is_some()
+                    && data
+                        .get("key")
+                        .and_then(Value::as_str)
+                        .is_some_and(|k| !k.is_empty())
+            })
             .cloned()
-            .ok_or_else(|| anyhow!("create trip: no data returned"))
+            .ok_or_else(|| {
+                anyhow::Error::new(OutcomeUnknown(
+                    "create trip: incomplete confirmation".into(),
+                ))
+            })
     }
 }
 
@@ -499,7 +576,7 @@ async fn login_response(request: RequestBuilder, what: &str) -> Result<(HeaderMa
         .map_err(|e| anyhow!("{what}: {}", e.without_url()))?;
     let status = response.status();
     if status == StatusCode::TOO_MANY_REQUESTS {
-        return Err(rate_limit(response.headers()).into());
+        return Err(rate_limit_at(response.headers(), SystemTime::now()).into());
     }
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         bail!(
@@ -523,7 +600,7 @@ async fn login_response(request: RequestBuilder, what: &str) -> Result<(HeaderMa
 }
 
 /// Percent-encode one URL path segment (RFC 3986 unreserved characters pass through).
-fn encode_segment(s: &str) -> String {
+pub(crate) fn encode_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
@@ -551,349 +628,42 @@ fn uuid_v4() -> String {
     )
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    pub(crate) fn response(status: &str, headers: &str, body: &str) -> String {
-        format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",
-            body.len()
-        )
-    }
-
-    pub(crate) async fn login_server(
-        responses: Vec<String>,
-    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            tokio::time::timeout(Duration::from_secs(5), async move {
-                let mut requests = Vec::new();
-                for response in responses {
-                    let (mut stream, _) = listener.accept().await.unwrap();
-                    let mut request = Vec::new();
-                    loop {
-                        let mut buf = [0; 1024];
-                        let n = stream.read(&mut buf).await.unwrap();
-                        assert!(n > 0, "client closed before completing the request");
-                        request.extend_from_slice(&buf[..n]);
-                        let Some(end) = request.windows(4).position(|b| b == b"\r\n\r\n") else {
-                            continue;
-                        };
-                        let headers = std::str::from_utf8(&request[..end]).unwrap();
-                        let length = headers
-                            .lines()
-                            .filter_map(|line| line.split_once(':'))
-                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                            .map(|(_, value)| value.trim().parse::<usize>().unwrap())
-                            .unwrap_or(0);
-                        if request.len() >= end + 4 + length {
-                            break;
-                        }
-                    }
-                    requests.push(String::from_utf8(request).unwrap());
-                    stream.write_all(response.as_bytes()).await.unwrap();
-                }
-                requests
-            })
-            .await
-            .expect("login requests exceeded the test deadline")
-        });
-        (base, server)
-    }
-
-    #[tokio::test]
-    async fn login_verifies_the_new_cookie_without_forwarding_other_cookies() {
-        let (base, server) = login_server(vec![
-            response(
-                "200 OK",
-                "Set-Cookie: analytics=other; Path=/\r\nSet-Cookie: connect.sid=s%3Anew.session%3D; Path=/; HttpOnly; Secure\r\n",
-                r#"{"success":true,"user":{"id":1,"username":"unverified"}}"#,
-            ),
-            response("200 OK", "", r#"{"success":true,"user":{"id":2,"username":"verified"}}"#),
-        ])
-        .await;
-        let (cookie, user) = Rest::login_at(&base, " person@example.com ", " password ")
-            .await
-            .unwrap();
-        assert_eq!(cookie, "s%3Anew.session%3D");
-        assert_eq!(user["username"], "verified");
-        let requests = server.await.unwrap();
-        let (headers, body) = requests[0].split_once("\r\n\r\n").unwrap();
-        assert!(headers.starts_with("POST /api/user/login HTTP/1.1\r\n"));
-        assert!(!headers.to_ascii_lowercase().contains("\r\ncookie:"));
-        assert_eq!(
-            serde_json::from_str::<Value>(body).unwrap(),
-            json!({"email":"person@example.com", "password":" password ", "platform":"web"})
-        );
-        assert!(requests[1].starts_with("GET /api/user HTTP/1.1\r\n"));
-        assert!(requests[1].contains("connect.sid=s%3Anew.session%3D\r\n"));
-        for private in ["analytics", "person@example.com", "password"] {
-            assert!(!requests[1].contains(private));
-        }
-    }
-
-    #[tokio::test]
-    async fn login_failures_never_echo_credentials_or_server_messages() {
-        let sensitive_body = r#"{"success":false,"messages":["person@example.com secret-password s%3Asecret.cookie"]}"#;
-        for (status, body, expected) in [
-            ("401 Unauthorized", sensitive_body, "rejected"),
-            ("403 Forbidden", sensitive_body, "rejected"),
-            ("429 Too Many Requests", sensitive_body, "rate limited"),
-            ("500 Internal Server Error", sensitive_body, "HTTP 500"),
-            ("302 Found", sensitive_body, "HTTP 302"),
-            ("200 OK", sensitive_body, "did not accept"),
-            ("200 OK", "secret-password", "unreadable response"),
-        ] {
-            let (base, server) = login_server(vec![response(
-                status,
-                "Set-Cookie: connect.sid=s%3Asecret.cookie; Path=/\r\nLocation: /must-not-follow\r\n",
-                body,
-            )])
-            .await;
-            let err = Rest::login_at(&base, "person@example.com", "secret-password")
-                .await
-                .unwrap_err();
-            let message = format!("{err:#}");
-            assert!(message.contains(expected), "{message}");
-            for secret in ["person@example.com", "secret-password", "s%3Asecret.cookie"] {
-                assert!(!message.contains(secret), "{message}");
-            }
-            assert_eq!(server.await.unwrap().len(), 1);
-        }
-    }
-
-    #[tokio::test]
-    async fn login_requires_a_session_cookie_and_authenticated_user() {
-        for headers in [
-            "",
-            "Set-Cookie: analytics=connect.sid=unrelated\r\n",
-            "Set-Cookie: connect.sid=; Path=/\r\n",
-            "Set-Cookie: connect.sid=invalid value; Path=/\r\n",
-        ] {
-            let (base, server) = login_server(vec![response(
-                "200 OK",
-                headers,
-                r#"{"success":true,"user":{"id":1}}"#,
-            )])
-            .await;
-            let err = Rest::login_at(&base, "person@example.com", "password")
-                .await
-                .unwrap_err();
-            assert!(err.to_string().contains("session cookie"));
-            assert_eq!(server.await.unwrap().len(), 1);
-        }
-        for (status, body, expected) in [
-            ("200 OK", r#"{"success":true,"user":null}"#, "not logged in"),
-            ("200 OK", r#"{"success":true,"user":{}}"#, "not logged in"),
-            (
-                "401 Unauthorized",
-                "secret-password s%3Anew.session",
-                "rejected",
-            ),
-        ] {
-            let (base, server) = login_server(vec![
-                response(
-                    "200 OK",
-                    "Set-Cookie: connect.sid=s%3Anew.session; Path=/\r\n",
-                    r#"{"success":true,"user":{"id":1}}"#,
-                ),
-                response(status, "", body),
-            ])
-            .await;
-            let err = Rest::login_at(&base, "person@example.com", "secret-password")
-                .await
-                .unwrap_err();
-            let message = format!("{err:#}");
-            assert!(message.contains(expected), "{message}");
-            assert!(!message.contains("secret-password"));
-            assert!(!message.contains("s%3Anew.session"));
-            assert_eq!(server.await.unwrap().len(), 2);
-        }
-    }
-
-    #[tokio::test]
-    async fn login_rejects_empty_credentials_before_network_access() {
-        for (email, password) in [("  ", "password"), ("person@example.com", "")] {
-            let err = Rest::login_at("invalid-url", email, password)
-                .await
-                .unwrap_err();
-            assert!(err.to_string().contains("cannot be empty"));
-        }
-    }
-
-    #[test]
-    fn retry_after_parses_seconds_dates_and_defaults() {
-        for (raw, expected) in [
-            (None, None),
-            (Some("garbage"), None),
-            (Some("-1"), None),
-            (Some("12"), Some(12)),
-            (Some("0"), Some(0)),
-            (Some("184467440737095516160"), Some(u64::MAX)),
-            (Some("Sun, 06 Nov 1994 08:49:37 GMT"), Some(0)),
-        ] {
-            let mut headers = HeaderMap::new();
-            if let Some(raw) = raw {
-                headers.insert(
-                    reqwest::header::RETRY_AFTER,
-                    HeaderValue::from_str(raw).unwrap(),
-                );
-            }
-            let error = rate_limit(&headers);
-            assert_eq!(error.retry_after_seconds, expected);
-            assert_eq!(error.retry_in_seconds, expected.unwrap_or(60));
-        }
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            reqwest::header::RETRY_AFTER,
-            HeaderValue::from_str(&httpdate::fmt_http_date(
-                SystemTime::now() + Duration::from_secs(120),
-            ))
-            .unwrap(),
-        );
-        assert!(matches!(
-            rate_limit(&headers).retry_after_seconds,
-            Some(119..=120)
-        ));
-    }
-
-    #[tokio::test]
-    async fn html_rate_limit_blocks_clones_without_replaying_post_or_leaking_secrets() {
-        let (base, server) = login_server(vec![response(
-            "429 Too Many Requests",
-            "Retry-After: 120\r\n",
-            "<html>private-cookie trip-secret</html>",
-        )])
-        .await;
-        let rest = Rest::for_test(&base).unwrap();
-        let clone = rest.clone();
-        let error = rest
-            .post(
-                "/api/tripPlans/trip-secret",
-                &json!({"secret":"private-cookie"}),
-                "write",
-            )
-            .await
-            .unwrap_err();
-        let limit = error.downcast_ref::<RateLimited>().unwrap();
-        assert_eq!(limit.retry_after_seconds, Some(120));
-        for secret in [base.as_str(), "trip-secret", "private-cookie", "<html>"] {
-            assert!(!format!("{error:#}").contains(secret));
-        }
-        let error = clone.current_user().await.unwrap_err();
-        assert!(error.downcast_ref::<RateLimited>().is_some());
-        let requests = server.await.unwrap();
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].starts_with("POST "));
-    }
-
-    #[tokio::test]
-    async fn rate_limit_invalid_and_absent_headers_use_default_before_json() {
-        for headers in ["", "Retry-After: invalid\r\n"] {
-            let (base, server) = login_server(vec![response(
-                "429 Too Many Requests",
-                headers,
-                "<html>limited</html>",
-            )])
-            .await;
-            let rest = Rest::for_test(&base).unwrap();
-            let error = rest.current_user().await.unwrap_err();
-            let limit = error.downcast_ref::<RateLimited>().unwrap();
-            assert_eq!(limit.retry_after_seconds, None);
-            assert_eq!(limit.retry_in_seconds, 60);
-            assert_eq!(server.await.unwrap().len(), 1);
-        }
-    }
-
-    #[tokio::test]
-    async fn expired_cooldown_allows_one_new_request() {
-        let (base, server) = login_server(vec![
-            response("429 Too Many Requests", "Retry-After: 1\r\n", "limited"),
-            response("200 OK", "", r#"{"success":true,"user":{"id":1}}"#),
-        ])
-        .await;
-        let rest = Rest::for_test(&base).unwrap();
-        assert!(
-            rest.current_user()
-                .await
-                .unwrap_err()
-                .downcast_ref::<RateLimited>()
-                .is_some()
-        );
-        {
-            let mut cooldown = rest.cooldown.lock().unwrap();
-            cooldown.as_mut().unwrap().started = Instant::now() - Duration::from_secs(2);
-        }
-        assert_eq!(rest.current_user().await.unwrap().unwrap()["id"], 1);
-        assert_eq!(server.await.unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn bulk_details_encode_repeated_query_and_validate_response() {
-        let (base, server) = login_server(vec![response(
-            "200 OK",
-            "",
-            r#"{"success":true,"data":[{"place_id":"first"},{"place_id":"second"}]}"#,
-        )])
-        .await;
-        let rest = Rest::for_test(&base).unwrap();
-        assert!(rest.multiple_place_details(&[]).await.unwrap().is_empty());
-        let details = rest
-            .multiple_place_details(&["first/東京".into(), "second&value".into()])
-            .await
-            .unwrap();
-        assert_eq!(details.len(), 2);
-        let requests = server.await.unwrap();
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].starts_with("GET /api/placesAPI/getMultiplePlaceDetails?placeIds%5B%5D=first%2F%E6%9D%B1%E4%BA%AC&placeIds%5B%5D=second%26value&language=en HTTP/1.1\r\n"));
-        assert!(!requests[0].to_ascii_lowercase().contains("\r\ncookie:"));
-        for data in [json!(null), json!({})] {
-            let (base, server) = login_server(vec![response(
-                "200 OK",
-                "",
-                &json!({"success":true,"data":data}).to_string(),
-            )])
-            .await;
-            assert!(
-                Rest::for_test(&base)
-                    .unwrap()
-                    .multiple_place_details(&["first".into()])
-                    .await
-                    .is_err()
-            );
-            server.await.unwrap();
-        }
-    }
-
-    #[test]
-    fn debug_never_prints_the_trip_key() {
-        let t = TripSummary {
-            id: 1,
-            key: "abcdefghijklmnop".into(),
-            editable: true,
-            title: "t".into(),
-            start_date: None,
-            end_date: None,
-            place_count: 0,
-            edited_at: None,
-            relation: "own",
-        };
-        assert!(!format!("{t:?}").contains("abcdefghijklmnop"));
-    }
-
-    #[test]
-    fn segments_and_uuids() {
-        assert_eq!(encode_segment("ChIJ_x-1.~"), "ChIJ_x-1.~");
-        assert_eq!(
-            encode_segment("東京 tower/1"),
-            "%E6%9D%B1%E4%BA%AC%20tower%2F1"
-        );
-        let id = uuid_v4();
-        assert_eq!(id.len(), 36);
-        assert_eq!(&id[14..15], "4");
-        assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
-    }
+pub(crate) fn is_loopback(url: &reqwest::Url) -> bool {
+    url.host_str()
+        .and_then(|s| s.trim_matches(['[', ']']).parse::<std::net::IpAddr>().ok())
+        .is_some_and(|ip| ip.is_loopback())
 }
+pub(crate) fn validate_endpoint(raw: &str, tls: &str, plain: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(raw).map_err(|_| anyhow!("invalid transport endpoint"))?;
+    ensure!(
+        url.username().is_empty() && url.password().is_none() && url.fragment().is_none(),
+        "transport endpoint must not contain credentials or fragments"
+    );
+    ensure!(
+        url.scheme() == tls || (url.scheme() == plain && is_loopback(&url)),
+        "TLS required except for literal loopback mocks"
+    );
+    Ok(url)
+}
+pub(crate) fn redact(text: &str, secrets: &[String]) -> String {
+    let mut result = text.to_owned();
+    for secret in secrets.iter().filter(|s| !s.is_empty()) {
+        let decoded = percent_encoding::percent_decode_str(secret)
+            .decode_utf8_lossy()
+            .into_owned();
+        for variant in [secret.clone(), encode_segment(secret), decoded] {
+            if !variant.is_empty() {
+                result = result.replace(&variant, "<redacted>");
+            }
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+#[path = "tests/rest.rs"]
+pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "rest_tests.rs"]
+mod coverage_tests;

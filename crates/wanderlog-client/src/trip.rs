@@ -232,82 +232,9 @@ pub fn delta_len(delta: &Value) -> usize {
 }
 
 #[cfg(test)]
-pub(crate) mod fixture {
-    use serde_json::{Value, json};
-
-    /// A small synthetic trip shaped like captured Wanderlog documents (no real data).
-    pub fn doc() -> Value {
-        json!({
-            "title": "Test trip",
-            "startDate": "2026-11-10", "endDate": "2026-11-11", "days": 2,
-            "itinerary": {
-                "options": {},
-                "budget": {"amount": {"amount": 0, "currencyCode": "USD"}, "expenses": [], "payments": [], "simplifyDebt": false},
-                "journal": {"stops": [], "summary": ""},
-                "sections": [
-                    {"heading": "Notes", "text": {"ops": [{"insert": "Bring cash\n"}]}, "blocks": [],
-                     "placeMarkerColor": "#000000", "placeMarkerIcon": "map-marker", "id": 100, "type": "textOnly", "mode": "placeList"},
-                    {"heading": "Places to visit", "text": {"ops": [{"insert": "\n"}]}, "placeMarkerColor": "#3f52e3",
-                     "placeMarkerIcon": "map-marker", "id": 101, "type": "normal", "mode": "placeList", "date": null,
-                     "blocks": [{"id": 1, "type": "place", "place": {"name": "Sensō-ji", "place_id": "P1", "rating": 4.5, "types": ["tourist_attraction"]},
-                                 "text": {"ops": [{"insert": "\n"}]}, "addedBy": {"type": "user", "userId": 7}, "imageSize": "small",
-                                 "upvotedBy": [], "travelMode": null, "attachments": []}]},
-                    {"heading": "", "text": {"ops": [{"insert": "\n"}]}, "blocks": [], "placeMarkerColor": "#46cdcf",
-                     "placeMarkerIcon": "map-marker", "id": 102, "type": "normal", "mode": "dayPlan", "date": "2026-11-10"},
-                    {"heading": "Museums", "text": {"ops": [{"insert": "\n"}]}, "placeMarkerColor": "#7045af",
-                     "placeMarkerIcon": "map-marker", "id": 103, "type": "normal", "mode": "dayPlan", "date": "2026-11-11",
-                     "blocks": [
-                        {"id": 2, "type": "place", "place": {"name": "Tokyo Tower", "place_id": "P2"}, "text": {"ops": [{"insert": "Go at sunset.\n"}]},
-                         "startTime": "17:00", "endTime": null, "addedBy": {"type": "user", "userId": 7}, "imageSize": "small",
-                         "upvotedBy": [], "travelMode": null, "attachments": []},
-                        {"id": 3, "type": "note", "text": {"ops": [{"insert": "Buy tickets\n"}]}, "addedBy": {"type": "user", "userId": 7}, "attachments": []}
-                     ]}
-                ]
-            }
-        })
-    }
-}
+#[path = "tests/trip_fixture.rs"]
+pub(crate) mod fixture;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn resolves_selectors() {
-        let doc = fixture::doc();
-        assert_eq!(resolve_section(&doc, "s:101").unwrap(), 1);
-        assert_eq!(resolve_section(&doc, "[s:103]").unwrap(), 3);
-        assert_eq!(resolve_section(&doc, "2026-11-10").unwrap(), 2);
-        assert_eq!(resolve_section(&doc, "day:2").unwrap(), 3);
-        assert_eq!(resolve_section(&doc, "Day 1").unwrap(), 2);
-        assert_eq!(resolve_section(&doc, "places to visit").unwrap(), 1);
-        assert!(resolve_section(&doc, "2026-11-12").is_err());
-        assert!(resolve_section(&doc, "day:3").is_err());
-        assert_eq!(resolve_block(&doc, "b:3").unwrap(), (3, 1));
-        assert!(resolve_block(&doc, "b:99").is_err());
-        assert_eq!(section_label(&doc, 3), "Day 2 (2026-11-11)");
-        // A list named like a day selector is ambiguous unless `day:<n>` or an id is used.
-        let mut named = fixture::doc();
-        named["itinerary"]["sections"][1]["heading"] = json!("Day 1");
-        assert!(
-            resolve_section(&named, "Day 1")
-                .unwrap_err()
-                .to_string()
-                .contains("matches 2 sections")
-        );
-        assert_eq!(resolve_section(&named, "day:1").unwrap(), 2);
-        assert_eq!(resolve_section(&doc, "101").unwrap(), 1);
-        assert!(resolve_section(&doc, "999").is_err());
-    }
-
-    #[test]
-    fn ids_and_text() {
-        let doc = fixture::doc();
-        let ids = collect_ids(&doc);
-        assert!(ids.contains(&100) && ids.contains(&3) && !ids.contains(&7));
-        let text = &sections(&doc)[3]["blocks"][0]["text"];
-        assert_eq!(delta_text(text), "Go at sunset.");
-        assert_eq!(delta_len(text), 14);
-    }
-}
+#[path = "tests/trip.rs"]
+mod tests;

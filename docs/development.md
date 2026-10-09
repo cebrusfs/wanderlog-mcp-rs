@@ -6,6 +6,12 @@ in `mise.toml` at the repository root.
 
 ## Architecture
 
+The repository is a Cargo workspace with two crates:
+
+- `crates/wanderlog-client`: REST and ShareDB clients, trip models, rendering, JSON0 and edit
+  planning. Callers supply the session; it has no MCP, CLI or credential-store dependency.
+- `crates/wanderlog-mcp`: the stdio MCP server, the CLI and Keychain session storage.
+
 - **Reads** use Wanderlog's REST endpoints (trip list, trip, place search/details).
 - **Edits** go through ShareDB, the realtime engine behind Wanderlog's live collaboration: each
   `apply_edits` call becomes **one atomic revision**, built from a fresh snapshot. Tripmates see it
@@ -20,15 +26,16 @@ See the [tool reference](tools.md) for edit semantics and output safeguards, and
 
 ```sh
 mise run ci            # workflow lint + the project checks below; no live API tests
-mise run check         # cargo fmt --check, clippy -D warnings, unit/doc tests
+mise run check         # cargo fmt --check, clippy -D warnings, workspace tests and docs
 mise run coverage      # unit/mock LCOV report; requires llvm-tools-preview
 mise run package       # macOS packages + archive/stdio smoke checks; requires Bun and network
 ```
 
 Unit tests cover the json0 engine, the edit planner (component shapes mirror captured web-client
 ops), rendering, and the tool schemas (flat JSON objects, no `$ref`/`oneOf`, for OpenAI clients).
-HTTP and WebSocket tests use local mock servers. `check` selects library, binary, and doc tests
-explicitly; it never runs the live integration target, even if its `#[ignore]` marker changes.
+HTTP and WebSocket tests use local mock servers, and a CLI test drives the built binary over stdio
+with a synthetic cookie. The live integration target requires the `live-tests` feature, so `check`
+never builds it; the Keychain round trip (synthetic account) requires `native-keychain-tests`.
 For optional live validation, set `WANDERLOG_E2E_TRIP_ID` to your own throwaway trip with dates,
 authenticate locally, and run `mise run e2e`. That task talks to Wanderlog and restores the trip
 after its round-trip; it is never invoked by CI.
@@ -40,16 +47,19 @@ from live account and desktop UI testing.
 
 Install the active Rust toolchain's coverage component with
 `mise exec -- rustup component add llvm-tools-preview`, then run `mise run coverage`.
-Mise pins `cargo-llvm-cov`; the task selects only library and binary unit/mock tests, excluding
-live integration tests and doctests. Source paths are relative to the repository so reports are
-portable between runners. It writes line coverage to `$TMPDIR/wanderlog-mcp-lcov.info`.
-Set `COVERAGE_FILE` to override the report path. No minimum coverage percentage is enforced.
+Mise pins `cargo-llvm-cov`; the task runs the workspace's unit, mock and CLI tests (never the
+live target) and reports production code only, excluding test files. Source paths are relative to
+the repository so reports are portable between runners. It writes line coverage to
+`$TMPDIR/wanderlog-mcp-lcov.info` and fails below 90% line coverage. Set `COVERAGE_FILE` to
+override the report path.
 
 ### GitHub Actions
 
 **CI** (`.github/workflows/ci.yml`) runs on pushes, pull requests, and manual dispatches using a
-macOS runner. It calls `mise run ci`, with no Wanderlog credentials or live API tests. Dependency
-downloads remain available; there is no firewall or network sandbox. After checks pass, it runs
+macOS runner. It calls `mise run ci` and the Keychain round trip, with no Wanderlog credentials or
+live API tests. A Linux and Windows job checks `wanderlog-client` on its own and fails if MCP, CLI
+or credential crates leak into its dependency tree. Dependency downloads remain available; there
+is no firewall or network sandbox. After checks pass, it runs
 `mise run package` and uploads Apple Silicon `.mcpb`, OpenAI `.zip`, and SHA256 checksums as
 **desktop-macos-arm64** for seven days. See the [README](../README.md#desktop-packages-recommended)
 for downloading and installing these packages.

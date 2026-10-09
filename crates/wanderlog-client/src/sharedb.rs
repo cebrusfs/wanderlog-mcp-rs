@@ -17,27 +17,13 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-const WS_BASE: &str = "wss://wanderlog.com/api/tripPlans/wsOverall/";
+pub const WS_BASE: &str = "wss://wanderlog.com/api/tripPlans/wsOverall/";
 const COLLECTION: &str = "TripPlans";
 /// Budget for each whole step (handshake, subscribe, acknowledgement), not per frame: pings and
 /// tripmates' ops keep arriving and must not extend the wait.
-const TIMEOUT: Duration = Duration::from_secs(20);
+pub const TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The op was sent but Wanderlog never confirmed or rejected it, so it may or may not be applied.
-#[derive(Debug)]
-pub struct OutcomeUnknown(pub String);
-
-impl std::fmt::Display for OutcomeUnknown {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}. The edit may or may not have been applied: re-read the trip before retrying",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for OutcomeUnknown {}
+pub use crate::errors::{OutcomeUnknown, RevisionConflict};
 
 /// A trip document at a known ShareDB version.
 pub struct Snapshot {
@@ -45,10 +31,24 @@ pub struct Snapshot {
     pub doc: Value,
 }
 
+impl Snapshot {
+    pub fn validate_revision(&self, expected: u64) -> Result<()> {
+        if self.version != expected {
+            return Err(RevisionConflict {
+                expected,
+                actual: self.version,
+            }
+            .into());
+        }
+        Ok(())
+    }
+}
+
 pub struct Connection {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     /// Trip key (document id). Bearer secret: never put it in errors.
     key: String,
+    cookie: String,
     session: String,
     seq: u64,
     timeout: Duration,
@@ -58,7 +58,10 @@ impl Connection {
     pub async fn open(cookie: &str, key: &str) -> Result<Self> {
         // clientSchemaVersion=2 and an Origin header are both required, or the server drops us.
         Self::open_url(
-            &format!("{WS_BASE}{key}?clientSchemaVersion=2"),
+            &format!(
+                "{WS_BASE}{}?clientSchemaVersion=2",
+                crate::rest::encode_segment(key)
+            ),
             cookie,
             key,
             TIMEOUT,
@@ -66,8 +69,12 @@ impl Connection {
         .await
     }
 
-    async fn open_url(url: &str, cookie: &str, key: &str, timeout: Duration) -> Result<Self> {
+    pub async fn open_url(url: &str, cookie: &str, key: &str, timeout: Duration) -> Result<Self> {
+        let url = crate::rest::validate_endpoint(url, "wss", "ws")?;
+        ensure!(!timeout.is_zero(), "WebSocket timeout must be nonzero");
+        let cookie = crate::session::normalize(cookie)?;
         let mut request = url
+            .as_str()
             .into_client_request()
             .map_err(|_| anyhow!("invalid trip key"))?;
         let mut session = HeaderValue::from_str(&format!("connect.sid={cookie}"))
@@ -81,10 +88,16 @@ impl Connection {
         let (ws, _) = tokio::time::timeout(timeout, connect_async(request))
             .await
             .map_err(|_| anyhow!("timed out connecting to Wanderlog"))?
-            .map_err(|e| anyhow!("could not open Wanderlog's edit channel: {}", describe(&e)))?;
+            .map_err(|e| {
+                anyhow!(
+                    "could not open Wanderlog's edit channel: {}",
+                    crate::rest::redact(&describe(&e), &[key.to_owned(), cookie.clone()])
+                )
+            })?;
         let mut conn = Self {
             ws,
             key: key.to_owned(),
+            cookie,
             session: String::new(),
             seq: 0,
             timeout,
@@ -95,7 +108,7 @@ impl Connection {
         let deadline = Instant::now() + conn.timeout;
         loop {
             let frame = conn.recv(deadline).await?;
-            check_error(&frame)?;
+            conn.check_error(&frame)?;
             let id = frame.get("id").and_then(Value::as_str);
             match frame.get("a").and_then(Value::as_str) {
                 Some("init") => conn.session = id.unwrap_or_default().to_owned(),
@@ -122,8 +135,9 @@ impl Connection {
         let deadline = Instant::now() + self.timeout;
         loop {
             let frame = self.recv(deadline).await?;
-            check_error(&frame)?;
-            if frame.get("a").and_then(Value::as_str) != Some("s") {
+            self.check_error(&frame)?;
+            if frame.get("a").and_then(Value::as_str) != Some("s") || !self.matches_document(&frame)
+            {
                 continue;
             }
             let data = frame
@@ -157,42 +171,65 @@ impl Connection {
             let same_seq = frame.get("seq").and_then(Value::as_u64) == Some(seq);
             let from_us = frame
                 .get("src")
-                .and_then(Value::as_str)
-                .is_none_or(|src| src == self.session);
+                .is_none_or(|src| src.as_str() == Some(self.session.as_str()));
+            let own_reply = is_op && same_seq && from_us && self.matches_document(&frame);
             if let Some(error) = frame.get("error") {
-                if is_op && same_seq {
+                if own_reply {
                     bail!(
                         "Wanderlog rejected the edit (nothing applied): {}",
-                        error_text(error)
+                        self.sanitize(&error_text(error))
                     );
                 }
                 if frame.get("seq").is_none() {
-                    return Err(unknown(anyhow!("Wanderlog error: {}", error_text(error))));
+                    return Err(unknown(anyhow!(
+                        "Wanderlog error: {}",
+                        self.sanitize(&error_text(error))
+                    )));
                 }
                 continue;
             }
-            check_error(&frame).map_err(unknown)?;
-            if is_op && same_seq && from_us && frame.get("op").is_none() {
+            self.check_error(&frame).map_err(unknown)?;
+            if own_reply && frame.get("op").is_none() {
                 return frame
                     .get("v")
                     .and_then(Value::as_u64)
-                    .ok_or_else(|| anyhow!("acknowledgement without version"));
+                    .filter(|v| *v >= version && *v < u64::MAX)
+                    .ok_or_else(|| unknown(anyhow!("acknowledgement without a valid version")));
             }
             // Ops from tripmates arrive here too; the server has already transformed ours.
         }
     }
 
     pub async fn close(mut self) {
-        let _ = self.ws.close(None).await;
+        let _ = tokio::time::timeout(self.timeout, self.ws.close(None)).await;
     }
 
     async fn send(&mut self, frame: Value) -> Result<()> {
-        self.ws
-            .send(Message::text(frame.to_string()))
+        tokio::time::timeout(self.timeout, self.ws.send(Message::text(frame.to_string())))
             .await
-            .map_err(|e| anyhow!("sending to Wanderlog failed: {}", describe(&e)))
+            .map_err(|_| anyhow!("timed out sending to Wanderlog"))?
+            .map_err(|e| {
+                anyhow!(
+                    "sending to Wanderlog failed: {}",
+                    self.sanitize(&describe(&e))
+                )
+            })
     }
 
+    fn matches_document(&self, frame: &Value) -> bool {
+        frame
+            .get("c")
+            .is_none_or(|c| c.as_str() == Some(COLLECTION))
+            && frame
+                .get("d")
+                .is_none_or(|d| d.as_str() == Some(self.key.as_str()))
+    }
+    fn sanitize(&self, text: &str) -> String {
+        crate::rest::redact(text, &[self.key.clone(), self.cookie.clone()])
+    }
+    fn check_error(&self, frame: &Value) -> Result<()> {
+        check_error(frame).map_err(|e| anyhow!("{}", self.sanitize(&format!("{e:#}"))))
+    }
     async fn recv(&mut self, deadline: Instant) -> Result<Value> {
         loop {
             let next = tokio::time::timeout_at(deadline, self.ws.next())
@@ -200,7 +237,7 @@ impl Connection {
                 .map_err(|_| anyhow!("Wanderlog did not answer in time"))?;
             match next {
                 None => bail!("Wanderlog closed the connection"),
-                Some(Err(e)) => bail!("connection error: {}", describe(&e)),
+                Some(Err(e)) => bail!("connection error: {}", self.sanitize(&describe(&e))),
                 Some(Ok(Message::Text(text))) => {
                     return serde_json::from_str(text.as_str())
                         .context("malformed frame from Wanderlog");
@@ -213,7 +250,7 @@ impl Connection {
                             if f.reason.is_empty() {
                                 String::new()
                             } else {
-                                format!(": {}", quoted(&f.reason))
+                                format!(": {}", self.sanitize(&quoted(&f.reason)))
                             }
                         )
                     });
@@ -278,68 +315,9 @@ fn describe(error: &tungstenite::Error) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "tests/sharedb.rs"]
+mod tests;
 
-    #[test]
-    fn error_frames() {
-        assert!(check_error(&json!({"a": "hs", "id": "x"})).is_ok());
-        let err = check_error(&json!({"code": 4001, "message": "Too many requests"})).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "Wanderlog refused the request (4001): «Too many requests»"
-        );
-        let err = check_error(&json!({"a": "s", "error": {"code": 4022, "message": "Forbidden"}}))
-            .unwrap_err();
-        assert_eq!(err.to_string(), "Wanderlog error: «Forbidden»");
-    }
-
-    /// A server that keeps the socket busy (pings, tripmates' ops) but never acknowledges our op
-    /// must not keep `submit` waiting past its deadline.
-    #[tokio::test]
-    async fn ack_wait_has_a_hard_deadline() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-            while let Some(Ok(msg)) = ws.next().await {
-                let Message::Text(text) = msg else { continue };
-                let frame: Value = serde_json::from_str(text.as_str()).unwrap();
-                let reply = match frame["a"].as_str() {
-                    Some("hs") => json!({"a": "hs", "id": "me", "protocol": 1, "protocolMinor": 2}),
-                    Some("s") => {
-                        json!({"a": "s", "c": COLLECTION, "d": "k", "data": {"v": 3, "data": {"title": "t"}}})
-                    }
-                    Some("op") => loop {
-                        let _ = ws.send(Message::Ping(vec![1].into())).await;
-                        let foreign = json!({"a": "op", "c": COLLECTION, "d": "k", "v": 3, "src": "other", "seq": 1, "op": []});
-                        let _ = ws.send(Message::text(foreign.to_string())).await;
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    },
-                    _ => continue,
-                };
-                ws.send(Message::text(reply.to_string())).await.unwrap();
-            }
-        });
-        let url = format!("ws://{addr}/");
-        let mut conn = Connection::open_url(&url, "cookie", "k", Duration::from_millis(800))
-            .await
-            .unwrap();
-        let snapshot = conn.subscribe().await.unwrap();
-        let started = std::time::Instant::now();
-        let err = conn
-            .submit(
-                snapshot.version,
-                &[json!({"p": ["title"], "od": "t", "oi": "x"})],
-            )
-            .await
-            .unwrap_err();
-        assert!(err.downcast_ref::<OutcomeUnknown>().is_some(), "{err:#}");
-        assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "waited {:?}",
-            started.elapsed()
-        );
-    }
-}
+#[cfg(test)]
+#[path = "sharedb_tests.rs"]
+mod coverage_tests;

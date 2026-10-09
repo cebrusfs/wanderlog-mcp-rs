@@ -65,6 +65,11 @@ fn section_ids(doc: &Value) -> Vec<u64> {
 #[tokio::test]
 #[ignore = "talks to wanderlog.com; needs WANDERLOG_E2E_TRIP_ID and a stored session"]
 async fn live_round_trip_restores_the_trip() -> Result<()> {
+    anyhow::ensure!(
+        std::env::var("WANDERLOG_E2E_ALLOW_WRITES").as_deref() == Ok("true"),
+        "live writes require explicit WANDERLOG_E2E_ALLOW_WRITES=true"
+    );
+
     let trip_id: u64 = std::env::var("WANDERLOG_E2E_TRIP_ID")
         .context("set WANDERLOG_E2E_TRIP_ID to a throwaway trip id")?
         .parse()?;

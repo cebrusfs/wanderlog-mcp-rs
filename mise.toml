@@ -9,23 +9,23 @@ shellcheck = "0.11.0"
 [tasks.check]
 description = "Format check, clippy (warnings are errors) and unit tests"
 run = [
-  "cargo fmt --check",
-  "cargo clippy --locked --all-targets -- -D warnings",
-  "cargo test --locked --lib --bins",
-  "cargo test --locked --doc",
+  "cargo fmt --all --check",
+  "cargo clippy --workspace --locked --all-targets -- -D warnings",
+  "cargo test --workspace --locked",
+  "cargo doc --workspace --no-deps --locked",
 ]
 
 [tasks.e2e]
 description = "Live round-trip on a throwaway trip (needs WANDERLOG_E2E_TRIP_ID and a stored session)"
-run = "cargo test --test e2e -- --ignored --nocapture"
+run = "cargo test -p wanderlog-mcp --features live-tests --test e2e -- --ignored --nocapture"
 
 [tasks.coverage]
 description = "Unit/mock line coverage as LCOV in $TMPDIR (requires llvm-tools-preview); excludes live e2e"
-run = 'cargo llvm-cov --locked --lib --bins --remap-path-prefix --lcov --output-path "${COVERAGE_FILE:-${TMPDIR:?TMPDIR is required}/wanderlog-mcp-lcov.info}"'
+run = 'cargo llvm-cov --workspace --locked --ignore-filename-regex "(/tests/|_tests.rs$|test_support.rs$)" --fail-under-lines 90 --remap-path-prefix --lcov --output-path "${COVERAGE_FILE:-${TMPDIR:?TMPDIR is required}/wanderlog-mcp-lcov.info}"'
 
 [tasks.install]
 description = "Install the binary into ~/.cargo/bin"
-run = "cargo install --path . --locked"
+run = "cargo install --path crates/wanderlog-mcp --locked"
 
 [tasks.audit]
 description = "Supply-chain policy: RustSec advisories, licenses, bans, sources (needs network)"

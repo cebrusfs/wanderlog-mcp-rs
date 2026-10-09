@@ -10,7 +10,8 @@ import Ajv2020 from "ajv/dist/2020.js";
 
 // Cargo owns package identity; both client adapters wrap the same release binary.
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const { name, version, description } = Bun.TOML.parse(readFileSync(join(repo, "Cargo.toml"), "utf8")).package;
+const metadata = JSON.parse(run("cargo", ["metadata", "--no-deps", "--format-version", "1", "--locked"]));
+const { name, version, description } = metadata.packages.find((p) => p.name === "wanderlog-mcp");
 assert.equal(process.platform, "darwin", "Desktop packaging currently supports macOS only");
 const cpu = { arm64: "aarch64", x64: "x86_64" }[process.arch];
 assert(cpu, `Unsupported macOS architecture: ${process.arch}`);
@@ -95,8 +96,7 @@ async function smoke(command, args, cwd, expectedVersion) {
 }
 
 console.log(`Building ${label}...`);
-run("cargo", ["build", "--release", "--locked", "--target", target], { stdio: "inherit", timeout: 600_000 });
-const metadata = JSON.parse(run("cargo", ["metadata", "--no-deps", "--format-version", "1", "--locked"]));
+run("cargo", ["build", "--package", name, "--release", "--locked", "--target", target], { stdio: "inherit", timeout: 600_000 });
 const binary = join(metadata.target_directory, target, "release", name);
 assert.equal(run("/usr/bin/lipo", ["-archs", binary]), process.arch === "x64" ? "x86_64" : "arm64");
 const expectedTools = await smoke(binary, args, repo, version);

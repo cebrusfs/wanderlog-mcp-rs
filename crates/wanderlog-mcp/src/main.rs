@@ -189,3 +189,7 @@ fn username(user: &Value) -> String {
         .unwrap_or("(unknown)")
         .to_owned()
 }
+
+#[cfg(test)]
+#[path = "tests/main.rs"]
+mod tests;
