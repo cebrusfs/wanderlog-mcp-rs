@@ -32,11 +32,39 @@ jobs:
       - name: Install Rust checks
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - name: Validate workflows and run unit/doc tests
-        run: mise run ci
+        run: |
+          mise run ci
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+
+  client:
+    name: Standalone client on Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust checks
+        run: rustup toolchain install stable --profile minimal --component clippy
+      - name: Check client without MCP feature unification
+        run: |
+          cargo clippy -p wanderlog-client --all-targets --no-default-features --locked -- -D warnings
+          cargo test -p wanderlog-client --no-default-features --locked
+          cargo doc -p wanderlog-client --no-default-features --no-deps --locked
+          cargo package --locked -p wanderlog-client
+      - name: Reject application dependencies in client
+        run: |
+          cargo tree -p wanderlog-client --edges normal --prefix none --format '{p}' > "$RUNNER_TEMP/client-dependencies.txt"
+          if grep -E '^(rmcp|clap|keyring|rpassword) ' "$RUNNER_TEMP/client-dependencies.txt"; then
+            echo 'Application dependency leaked into the standalone client'
+            exit 1
+          fi
 
   package:
     name: macOS desktop packages
-    needs: check
+    needs: [check, client]
     runs-on: macos-15
     timeout-minutes: 25
     outputs:
