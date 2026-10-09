@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use rmcp::schemars::{self, JsonSchema};
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 

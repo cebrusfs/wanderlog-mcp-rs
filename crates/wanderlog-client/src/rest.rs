@@ -17,7 +17,7 @@ pub const BASE: &str = "https://wanderlog.com";
 pub struct Rest {
     http: reqwest::Client,
     cooldown: Arc<Mutex<Option<Cooldown>>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     base: String,
 }
 
@@ -107,13 +107,13 @@ impl Rest {
         Ok(Self {
             http: Self::client(Some(cookie))?,
             cooldown: Arc::new(Mutex::new(None)),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             base: BASE.to_owned(),
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn for_test(base: &str) -> Result<Self> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(base: &str) -> Result<Self> {
         Ok(Self {
             http: Self::client(None)?,
             cooldown: Arc::new(Mutex::new(None)),
@@ -122,11 +122,11 @@ impl Rest {
     }
 
     fn base(&self) -> &str {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             &self.base
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         {
             BASE
         }
@@ -554,55 +554,7 @@ fn uuid_v4() -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    pub(crate) fn response(status: &str, headers: &str, body: &str) -> String {
-        format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",
-            body.len()
-        )
-    }
-
-    pub(crate) async fn login_server(
-        responses: Vec<String>,
-    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            tokio::time::timeout(Duration::from_secs(5), async move {
-                let mut requests = Vec::new();
-                for response in responses {
-                    let (mut stream, _) = listener.accept().await.unwrap();
-                    let mut request = Vec::new();
-                    loop {
-                        let mut buf = [0; 1024];
-                        let n = stream.read(&mut buf).await.unwrap();
-                        assert!(n > 0, "client closed before completing the request");
-                        request.extend_from_slice(&buf[..n]);
-                        let Some(end) = request.windows(4).position(|b| b == b"\r\n\r\n") else {
-                            continue;
-                        };
-                        let headers = std::str::from_utf8(&request[..end]).unwrap();
-                        let length = headers
-                            .lines()
-                            .filter_map(|line| line.split_once(':'))
-                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                            .map(|(_, value)| value.trim().parse::<usize>().unwrap())
-                            .unwrap_or(0);
-                        if request.len() >= end + 4 + length {
-                            break;
-                        }
-                    }
-                    requests.push(String::from_utf8(request).unwrap());
-                    stream.write_all(response.as_bytes()).await.unwrap();
-                }
-                requests
-            })
-            .await
-            .expect("login requests exceeded the test deadline")
-        });
-        (base, server)
-    }
+    use crate::test_support::{login_server, response};
 
     #[tokio::test]
     async fn login_verifies_the_new_cookie_without_forwarding_other_cookies() {

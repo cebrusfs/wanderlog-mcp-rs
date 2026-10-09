@@ -990,7 +990,7 @@ pub async fn serve_stdio(read_only: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rest::tests::{login_server, response};
+    use wanderlog_client::test_support::{login_server, response};
 
     fn offline_server(read_only: bool) -> WanderlogServer {
         WanderlogServer::new(|| Err(anyhow!("no Wanderlog session stored")), read_only)

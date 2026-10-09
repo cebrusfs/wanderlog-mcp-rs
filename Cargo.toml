@@ -1,22 +1,48 @@
-[package]
-name = "wanderlog-mcp"
-version = "0.1.0"
+[workspace]
+members = ["crates/wanderlog-client"]
+default-members = [".", "crates/wanderlog-client"]
+resolver = "3"
+
+[workspace.package]
 edition = "2024"
 rust-version = "1.89"
-description = "MCP server and CLI that let AI agents read and edit Wanderlog trips"
-publish = false
+license = "Apache-2.0"
+repository = "https://github.com/cebrusfs/wanderlog-mcp-rs"
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1.0.104"
-clap = { version = "4.6.7", features = ["derive"] }
-futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
-httpdate = "1.0.3"
-keyring = "4.2.0"
-rand = "0.10.3"
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "http2", "query"] }
-rmcp = { version = "3.5.1", features = ["transport-io"] }
-rpassword = "7.5.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "io-std", "time", "sync"] }
-tokio-tungstenite = { version = "0.30.0", features = ["connect", "rustls-tls-native-roots"], default-features = false }
+
+[package]
+name = "wanderlog-mcp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Unofficial local MCP server and CLI for Wanderlog trips"
+readme = "README.md"
+keywords = ["wanderlog", "mcp", "travel", "itinerary", "cli"]
+categories = ["command-line-utilities"]
+publish = ["crates-io"]
+include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "NOTICE", "PRIVACY.md", "SECURITY.md", "CONTRIBUTING.md", "CHANGELOG.md", "docs/**"]
+
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin"]
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4.6.7", features = ["derive"] }
+keyring = "4.2.0"
+rmcp = { version = "3.5.1", features = ["transport-io"] }
+rpassword = "7.5.4"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+wanderlog-client = { path = "crates/wanderlog-client", version = "=0.1.0" }
+
+[dev-dependencies]
+wanderlog-client = { path = "crates/wanderlog-client", version = "=0.1.0", features = ["test-support"] }

@@ -9,19 +9,19 @@ shellcheck = "0.11.0"
 [tasks.check]
 description = "Format check, clippy (warnings are errors) and unit tests"
 run = [
-  "cargo fmt --check",
-  "cargo clippy --locked --all-targets -- -D warnings",
-  "cargo test --locked --lib --bins",
-  "cargo test --locked --doc",
+  "cargo fmt --all --check",
+  "cargo clippy --workspace --locked --all-targets -- -D warnings",
+  "cargo test --workspace --locked --lib --bins",
+  "cargo test --workspace --locked --doc",
 ]
 
 [tasks.e2e]
 description = "Live round-trip on a throwaway trip (needs WANDERLOG_E2E_TRIP_ID and a stored session)"
-run = "cargo test --test e2e -- --ignored --nocapture"
+run = "cargo test -p wanderlog-mcp --test e2e -- --ignored --nocapture"
 
 [tasks.coverage]
 description = "Unit/mock line coverage as LCOV in $TMPDIR (requires llvm-tools-preview); excludes live e2e"
-run = 'cargo llvm-cov --locked --lib --bins --remap-path-prefix --lcov --output-path "${COVERAGE_FILE:-${TMPDIR:?TMPDIR is required}/wanderlog-mcp-lcov.info}"'
+run = 'cargo llvm-cov --workspace --locked --lib --bins --remap-path-prefix --lcov --output-path "${COVERAGE_FILE:-${TMPDIR:?TMPDIR is required}/wanderlog-mcp-lcov.info}"'
 
 [tasks.install]
 description = "Install the binary into ~/.cargo/bin"
@@ -41,4 +41,4 @@ run = "actionlint"
 
 [tasks.ci]
 description = "Validate workflows and run unit/doc tests with local mocks; excludes live e2e"
-run = ["mise run lint-ci", "mise run check"]
+run = ["mise run lint-ci", "python3 scripts/release-check.py", "mise run check"]

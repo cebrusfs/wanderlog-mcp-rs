@@ -231,8 +231,9 @@ pub fn delta_len(delta: &Value) -> usize {
         .sum()
 }
 
-#[cfg(test)]
-pub(crate) mod fixture {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod fixture {
     use serde_json::{Value, json};
 
     /// A small synthetic trip shaped like captured Wanderlog documents (no real data).

@@ -185,3 +185,16 @@ See the [tool reference](docs/tools.md) for supported edits and the safety model
 - [Development, checks, and releases](docs/development.md)
 - [Desktop packaging reference](docs/desktop.md)
 - [Wanderlog protocol reference](docs/protocol.md)
+
+## Rust workspace and releases
+
+`wanderlog-client` (`wanderlog_client`) provides the reusable API without MCP or
+Keychain. `wanderlog-mcp` retains the local stdio server, CLI and credentials.
+The repository and executable names remain unchanged; legacy module paths are
+re-exported. New Rust consumers should use the client crate directly.
+
+Both crates use Apache-2.0; see LICENSE and NOTICE. This grants code rights,
+not upstream service, data, trademark or official affiliation rights. See
+[release instructions](https://github.com/cebrusfs/wanderlog-mcp-rs/blob/main/docs/publishing.md),
+CONTRIBUTING.md, SECURITY.md and PRIVACY.md. A Cargo name is not a registry
+reservation. Remote MCP is out of scope. No release is triggered by a push.

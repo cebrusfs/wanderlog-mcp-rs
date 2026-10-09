@@ -95,7 +95,7 @@ async function smoke(command, args, cwd, expectedVersion) {
 }
 
 console.log(`Building ${label}...`);
-run("cargo", ["build", "--release", "--locked", "--target", target], { stdio: "inherit", timeout: 600_000 });
+run("cargo", ["build", "--package", "wanderlog-mcp", "--release", "--locked", "--target", target], { stdio: "inherit", timeout: 600_000 });
 const metadata = JSON.parse(run("cargo", ["metadata", "--no-deps", "--format-version", "1", "--locked"]));
 const binary = join(metadata.target_directory, target, "release", name);
 assert.equal(run("/usr/bin/lipo", ["-archs", binary]), process.arch === "x64" ? "x86_64" : "arm64");
@@ -104,6 +104,10 @@ const output = mkdtempSync(join(tmpdir(), `${name}-packages-`));
 const staging = mkdtempSync(join(tmpdir(), `${name}-staging-`));
 
 function copyBinary(root) {
+  mkdirSync(root, { recursive: true });
+  for (const file of ["LICENSE", "NOTICE", "PRIVACY.md"]) {
+    copyFileSync(join(repo, file), join(root, file));
+  }
   const destination = join(root, entryPoint);
   mkdirSync(dirname(destination), { recursive: true });
   copyFileSync(binary, destination);
@@ -124,7 +128,7 @@ try {
       },
     },
     compatibility: { platforms: ["darwin"] },
-    privacy_policies: ["https://wanderlog.com/privacy"],
+    privacy_policies: ["https://github.com/cebrusfs/wanderlog-mcp-rs/blob/main/PRIVACY.md"],
     tools: expectedTools.map(({ name, description }) => ({ name, description })),
     user_config: {
       cookie: {

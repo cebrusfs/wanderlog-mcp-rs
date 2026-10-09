@@ -2507,22 +2507,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "wanderlog-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "httpdate",
+ "rand",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "wanderlog-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "futures-util",
- "httpdate",
  "keyring",
- "rand",
- "reqwest",
  "rmcp",
  "rpassword",
  "serde",
  "serde_json",
  "tokio",
- "tokio-tungstenite",
+ "wanderlog-client",
 ]
 
 [[package]]
