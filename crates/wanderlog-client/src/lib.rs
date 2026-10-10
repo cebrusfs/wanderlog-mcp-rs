@@ -17,4 +17,5 @@ pub mod rest;
 pub mod session;
 pub mod sharedb;
 pub mod trip;
+/// User-Agent of every request this crate sends.
 pub const USER_AGENT: &str = concat!("wanderlog-client/", env!("CARGO_PKG_VERSION"));

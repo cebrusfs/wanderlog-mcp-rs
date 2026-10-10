@@ -18,13 +18,18 @@ use crate::rest::Rest;
 use crate::trip::{self, blocks, delta_text, id_of, sections, str_of};
 use crate::{dates, json0};
 
+/// Most edits accepted in one batch.
 pub const MAX_EDITS: usize = 100;
+/// Longest trip, in days, that set_dates accepts.
 pub const MAX_TRIP_DAYS: i64 = 90;
 /// Marker colours seen on sections created by the web client; cycled for new sections.
 const MARKER_COLORS: [&str; 8] = [
     "#46cdcf", "#7045af", "#3498db", "#f75940", "#ec9b3b", "#3f52e3", "#e23e57", "#2ecc71",
 ];
 
+/// The kind of an [`Edit`]; the wire names are listed on [`Edit`].
+// Variant docs would turn the tool schema's plain `enum` into `oneOf`, which some clients reject.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +49,7 @@ pub enum EditOp {
 }
 
 impl EditOp {
+    /// The op's wire name, e.g. `add_place`.
     pub fn name(self) -> &'static str {
         match self {
             Self::AddPlace => "add_place",
@@ -61,6 +67,9 @@ impl EditOp {
     }
 }
 
+/// How new text meets an existing note: `replace` it, or `append` it as a new line.
+// Variant docs would turn the tool schema's plain `enum` into `oneOf`, which some clients reject.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +86,7 @@ pub enum TextMode {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", schemars(inline))]
 pub struct PlaceSource {
+    /// Numeric id of the trip holding the place.
     pub trip_id: u64,
     /// A `b:<id>` ref from the source trip's get_trip response.
     pub block: String,
@@ -84,9 +94,12 @@ pub struct PlaceSource {
     pub revision: Option<u64>,
 }
 
+/// How an add_place edit names its place; keys the prefetched [`PlaceInfo`] map.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PlaceKey {
+    /// A Google place_id.
     Id(String),
+    /// An existing place in a trip.
     Source(PlaceSource),
 }
 
@@ -140,12 +153,16 @@ pub struct Edit {
 /// Place data fetched before planning (REST), keyed by place_id.
 #[derive(Debug, Clone)]
 pub struct PlaceInfo {
+    /// Google-style place details, stored verbatim as the block's `place`.
     pub details: Value,
+    /// Wanderlog photo keys for the block's `imageKeys`.
     pub image_keys: Vec<String>,
+    /// Whether `image_keys` was fetched or copied (an empty list may then be final).
     pub photos_loaded: bool,
 }
 
 impl PlaceInfo {
+    /// The place's Google place_id.
     pub fn id(&self) -> Option<&str> {
         str_of(&self.details, "place_id").or_else(|| str_of(&self.details, "placeId"))
     }
@@ -177,6 +194,7 @@ impl PlaceInfo {
 }
 
 impl Edit {
+    /// The place an add_place edit names; fails unless exactly one of place_id or source is set.
     pub fn place_key(&self) -> Result<PlaceKey> {
         match (&self.place_id, &self.source) {
             (Some(id), None) if !id.trim().is_empty() => Ok(PlaceKey::Id(id.trim().to_owned())),
@@ -188,6 +206,7 @@ impl Edit {
     }
 }
 
+/// Reusable place data of `source` in its trip document `doc`, checked against its revision.
 pub fn source_place(doc: &Value, source: &PlaceSource) -> Result<PlaceInfo> {
     if let Some(revision) = source.revision {
         ensure!(
@@ -201,11 +220,15 @@ pub fn source_place(doc: &Value, source: &PlaceSource) -> Result<PlaceInfo> {
         .context("source block is not a reusable place")
 }
 
+/// What planning needs besides the document.
 pub struct PlanContext<'a> {
+    /// Account id recorded as `addedBy` on new items.
     pub user_id: u64,
+    /// Prefetched data for every place the edits add.
     pub places: &'a HashMap<PlaceKey, PlaceInfo>,
 }
 
+/// The result of planning a batch of edits.
 #[derive(Debug)]
 pub struct Plan {
     /// json0 components to submit as one op.

@@ -20,6 +20,7 @@ use tokio_tungstenite::{
     Connector, MaybeTlsStream, WebSocketStream, connect_async_tls_with_config,
 };
 
+/// WebSocket endpoint of trip documents; the trip key follows.
 pub const WS_BASE: &str = "wss://wanderlog.com/api/tripPlans/wsOverall/";
 const COLLECTION: &str = "TripPlans";
 /// Budget for each whole step (handshake, subscribe, acknowledgement), not per frame: pings and
@@ -30,11 +31,14 @@ pub use crate::errors::{OutcomeUnknown, RevisionConflict};
 
 /// A trip document at a known ShareDB version.
 pub struct Snapshot {
+    /// ShareDB version; the next op builds on it. Tools call it the revision.
     pub version: u64,
+    /// The trip document.
     pub doc: Value,
 }
 
 impl Snapshot {
+    /// Fail with [`RevisionConflict`] unless the snapshot is at `expected`.
     pub fn validate_revision(&self, expected: u64) -> Result<()> {
         if self.version != expected {
             return Err(RevisionConflict {
@@ -47,6 +51,7 @@ impl Snapshot {
     }
 }
 
+/// A ShareDB connection to one trip document: subscribe, then submit atomic ops.
 pub struct Connection {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     /// Trip key (document id). Bearer secret: never put it in errors.
@@ -58,6 +63,7 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// Connect to a trip on wanderlog.com and complete the ShareDB handshake.
     pub async fn open(cookie: &str, key: &str) -> Result<Self> {
         // clientSchemaVersion=2 and an Origin header are both required, or the server drops us.
         Self::open_url(
@@ -72,6 +78,7 @@ impl Connection {
         .await
     }
 
+    /// [`Connection::open`] against another endpoint and step timeout, e.g. a local test server.
     pub async fn open_url(url: &str, cookie: &str, key: &str, timeout: Duration) -> Result<Self> {
         let url = crate::rest::validate_endpoint(url, "wss", "ws")?;
         ensure!(!timeout.is_zero(), "WebSocket timeout must be nonzero");
@@ -209,6 +216,7 @@ impl Connection {
         }
     }
 
+    /// Close the socket, waiting at most one step timeout.
     pub async fn close(mut self) {
         let _ = tokio::time::timeout(self.timeout, self.ws.close(None)).await;
     }

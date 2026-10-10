@@ -1,17 +1,26 @@
 //! Application credentials; no plaintext persistent fallback outside macOS.
 use anyhow::{Result, anyhow, bail};
 pub use wanderlog_client::session::normalize;
+/// Environment variable that injects a session instead of the stored one.
 pub const ENV_VAR: &str = "WANDERLOG_COOKIE";
+/// Where the session came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
+    /// The [`ENV_VAR`] environment variable.
     Env,
+    /// The OS credential store.
     Keychain,
 }
+/// Persistent session storage; tests substitute an in-memory store.
 pub trait CredentialStore {
+    /// The stored session, if any.
     fn load(&self) -> Result<Option<String>>;
+    /// Replace the stored session.
     fn store(&self, value: &str) -> Result<()>;
+    /// Delete the stored session; `false` if there was none.
     fn clear(&self) -> Result<bool>;
 }
+/// The session from `raw` (the environment) if set, else from `store`, normalized.
 pub fn load_with(raw: Option<&str>, store: &dyn CredentialStore) -> Result<(String, Source)> {
     if let Some(raw) = raw.filter(|s| !s.trim().is_empty()) {
         return Ok((normalize(raw)?, Source::Env));
@@ -25,6 +34,7 @@ pub fn load_with(raw: Option<&str>, store: &dyn CredentialStore) -> Result<(Stri
         ),
     }
 }
+/// The macOS Keychain; elsewhere an empty store that refuses to save.
 pub struct OsCredentialStore;
 #[cfg(target_os = "macos")]
 fn entry() -> Result<keyring::Entry> {
@@ -65,12 +75,15 @@ impl CredentialStore for OsCredentialStore {
         Ok(false)
     }
 }
+/// The session from [`ENV_VAR`] or the OS credential store.
 pub fn load() -> Result<(String, Source)> {
     load_with(std::env::var(ENV_VAR).ok().as_deref(), &OsCredentialStore)
 }
+/// Normalize and save a session in the OS credential store.
 pub fn store(value: &str) -> Result<()> {
     OsCredentialStore.store(&normalize(value)?)
 }
+/// Delete the stored session; `false` if there was none.
 pub fn clear() -> Result<bool> {
     OsCredentialStore.clear()
 }

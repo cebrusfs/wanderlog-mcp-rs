@@ -1,3 +1,4 @@
+//! The built binary's CLI and stdio server, offline: a synthetic cookie and no terminal.
 use serde_json::{Value, json};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};

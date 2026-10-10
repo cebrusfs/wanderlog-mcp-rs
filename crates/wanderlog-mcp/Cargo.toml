@@ -13,6 +13,9 @@ documentation = "https://docs.rs/wanderlog-mcp"
 keywords = ["wanderlog", "mcp", "travel", "cli"]
 categories = ["command-line-utilities"]
 
+[lints]
+workspace = true
+
 [features]
 default = []
 live-tests = []

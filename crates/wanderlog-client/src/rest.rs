@@ -13,8 +13,10 @@ use reqwest::header::{ACCEPT, COOKIE, HeaderMap, HeaderValue, ORIGIN, SET_COOKIE
 use reqwest::{RequestBuilder, StatusCode};
 use serde_json::{Value, json};
 
+/// The Wanderlog origin the client talks to by default.
 pub const BASE: &str = "https://wanderlog.com";
 
+/// An HTTP session with Wanderlog. Cheap to clone; clones share the rate-limit cooldown.
 #[derive(Clone)]
 pub struct Rest {
     http: reqwest::Client,
@@ -34,7 +36,9 @@ struct Cooldown {
 /// A local cooldown or an HTTP 429; no request is automatically replayed.
 #[derive(Debug)]
 pub struct RateLimited {
+    /// The server's `Retry-After`, if it sent a valid one.
     pub retry_after_seconds: Option<u64>,
+    /// How long to wait before the next request.
     pub retry_in_seconds: u64,
 }
 
@@ -79,15 +83,21 @@ fn rate_limit_at(headers: &HeaderMap, now: SystemTime) -> RateLimited {
 /// A trip the account can open, from the home listing.
 #[derive(Clone)]
 pub struct TripSummary {
+    /// Numeric trip id: safe to show, unlike the key.
     pub id: u64,
     /// Bearer capability for the trip: never show it to models or write it to logs.
     pub key: String,
     /// Whether `key` is an edit key (writes allowed).
     pub editable: bool,
+    /// Trip title as written by its owner.
     pub title: String,
+    /// First day, `YYYY-MM-DD`.
     pub start_date: Option<String>,
+    /// Last day, `YYYY-MM-DD`.
     pub end_date: Option<String>,
+    /// Number of places in the trip.
     pub place_count: u64,
+    /// Last edit time as Wanderlog reports it.
     pub edited_at: Option<String>,
     /// "own", "shared with you" or "friend".
     pub relation: &'static str,
@@ -106,6 +116,7 @@ impl std::fmt::Debug for TripSummary {
 }
 
 impl Rest {
+    /// A session for wanderlog.com with the `connect.sid` cookie value (empty: logged out).
     pub fn new(cookie: &str) -> Result<Self> {
         Self::with_base_url(cookie, BASE)
     }
@@ -174,6 +185,7 @@ impl Rest {
         Self::login_with_base_url(BASE, email, password).await
     }
 
+    /// [`Rest::login`] against another origin, e.g. a local test server.
     pub async fn login_with_base_url(
         base: &str,
         email: &str,

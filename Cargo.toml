@@ -11,6 +11,11 @@ license = "Apache-2.0"
 repository = "https://github.com/cebrusfs/wanderlog-mcp-rs"
 homepage = "https://github.com/cebrusfs/wanderlog-mcp-rs"
 
+# Both crates opt in with `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
 [workspace.dependencies]
 anyhow = "1.0.104"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }

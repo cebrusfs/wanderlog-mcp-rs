@@ -49,8 +49,11 @@ const NEW_TRIP_PRIVACY: &str = "friends";
 /// Explicit transport injection for embedding and offline application tests.
 #[derive(Clone)]
 pub struct TransportOptions {
+    /// REST origin.
     pub rest_base: String,
+    /// ShareDB WebSocket endpoint prefix; the trip key follows.
     pub websocket_base: String,
+    /// Budget for each WebSocket step.
     pub timeout: Duration,
 }
 impl Default for TransportOptions {
@@ -161,12 +164,16 @@ fn batch_fingerprint(edits: &[Edit]) -> u64 {
     hasher.finish()
 }
 
+/// The MCP server: tool handlers over one cached Wanderlog session.
 #[derive(Clone)]
 pub struct WanderlogServer {
     state: Arc<State>,
     tool_router: ToolRouter<Self>,
 }
 
+/// How much get_trip shows.
+// Variant docs would turn the tool schema's plain `enum` into `oneOf`, which some clients reject.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[schemars(inline)]
@@ -176,6 +183,7 @@ pub enum Detail {
     Full,
 }
 
+/// get_trip arguments.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TripArgs {
     /// Numeric trip id from list_trips.
@@ -184,6 +192,7 @@ pub struct TripArgs {
     pub detail: Option<Detail>,
 }
 
+/// search_places arguments.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchArgs {
     /// Place name or search text, e.g. "teamLab Planets" or "ramen Shinjuku".
@@ -192,6 +201,7 @@ pub struct SearchArgs {
     pub trip_id: Option<u64>,
 }
 
+/// get_place arguments.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PlaceArgs {
     /// place_id from search_places or get_trip (detail=full).
@@ -200,6 +210,7 @@ pub struct PlaceArgs {
     pub trip_id: Option<u64>,
 }
 
+/// preview_edits and apply_edits arguments.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EditsArgs {
     /// Numeric trip id from list_trips.
@@ -211,6 +222,7 @@ pub struct EditsArgs {
     pub base_revision: Option<u64>,
 }
 
+/// create_trip arguments.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateTripArgs {
     /// Destination name: a city, region or country (e.g. "Kyoto").
@@ -232,6 +244,7 @@ impl WanderlogServer {
     ) -> Self {
         Self::with_transports(load_cookie, read_only, TransportOptions::default())
     }
+    /// [`WanderlogServer::new`] with explicit endpoints, e.g. local test servers.
     pub fn with_transports(
         load_cookie: impl Fn() -> Result<String> + Send + Sync + 'static,
         read_only: bool,

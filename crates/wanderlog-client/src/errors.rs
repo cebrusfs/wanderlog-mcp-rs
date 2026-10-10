@@ -1,4 +1,6 @@
 //! Typed errors carried by compatibility-preserving anyhow::Result APIs.
+/// A write whose result was not confirmed: it may or may not have been applied. Holds the
+/// redacted reason.
 #[derive(Debug)]
 pub struct OutcomeUnknown(pub String);
 impl std::fmt::Display for OutcomeUnknown {
@@ -11,9 +13,12 @@ impl std::fmt::Display for OutcomeUnknown {
     }
 }
 impl std::error::Error for OutcomeUnknown {}
+/// The trip moved past the revision the caller built on; nothing was written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RevisionConflict {
+    /// The revision the caller expected.
     pub expected: u64,
+    /// The trip's current revision.
     pub actual: u64,
 }
 impl std::fmt::Display for RevisionConflict {
@@ -26,8 +31,10 @@ impl std::fmt::Display for RevisionConflict {
     }
 }
 impl std::error::Error for RevisionConflict {}
+/// Wanderlog rejected the session (HTTP 401 or 403); it has probably expired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuthenticationFailed {
+    /// The HTTP status code.
     pub status: u16,
 }
 impl std::fmt::Display for AuthenticationFailed {

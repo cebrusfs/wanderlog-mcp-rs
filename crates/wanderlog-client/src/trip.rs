@@ -11,12 +11,14 @@ use serde_json::Value;
 
 use crate::json0::utf16_len;
 
+/// The itinerary sections of a trip document (empty if absent).
 pub fn sections(doc: &Value) -> &[Value] {
     doc.pointer("/itinerary/sections")
         .and_then(Value::as_array)
         .map_or(&[], Vec::as_slice)
 }
 
+/// The items of a section (empty if absent).
 pub fn blocks(section: &Value) -> &[Value] {
     section
         .get("blocks")
@@ -24,14 +26,17 @@ pub fn blocks(section: &Value) -> &[Value] {
         .map_or(&[], Vec::as_slice)
 }
 
+/// The numeric `id` of a section or block.
 pub fn id_of(v: &Value) -> Option<u64> {
     v.get("id").and_then(Value::as_u64)
 }
 
+/// A string field of a JSON object.
 pub fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
+/// A day of the itinerary (`mode: dayPlan`).
 pub fn is_day(section: &Value) -> bool {
     str_of(section, "mode") == Some("dayPlan")
 }

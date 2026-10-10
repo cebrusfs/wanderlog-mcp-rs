@@ -54,6 +54,7 @@ pub fn parse(s: &str) -> Result<i64> {
     Ok(n)
 }
 
+/// The `YYYY-MM-DD` form of a day number from [`parse`].
 pub fn format(n: i64) -> String {
     let (y, m, d) = civil_from_days(n);
     format!("{y:04}-{m:02}-{d:02}")
