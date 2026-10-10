@@ -25,10 +25,11 @@ See the [tool reference](tools.md) for edit semantics and output safeguards, and
 ## Checks
 
 ```sh
-mise run ci            # workflow lint + the project checks below; no live API tests
-mise run check         # cargo fmt --check, clippy -D warnings, workspace tests and docs
-mise run coverage      # unit/mock LCOV report; requires llvm-tools-preview
-mise run package       # macOS packages + archive/stdio smoke checks; requires Bun and network
+mise run ci             # workflow lint + the project checks below; no live API tests
+mise run check          # cargo fmt --check, clippy -D warnings, workspace tests and docs
+mise run coverage       # unit/mock LCOV report; requires llvm-tools-preview
+mise run min-rust-check # cargo check of every target on the minimum Rust; needs network
+mise run package        # macOS packages + archive/stdio smoke checks; requires Bun and network
 ```
 
 Unit tests cover the json0 engine, the edit planner (component shapes mirror captured web-client
@@ -81,6 +82,12 @@ is no firewall or network sandbox. After checks pass, it runs
 `mise run package` and uploads Apple Silicon `.mcpb`, OpenAI `.zip`, and SHA256 checksums as
 **desktop-macos-arm64** for seven days. See the [README](../README.md#desktop-packages-recommended)
 for downloading and installing these packages.
+
+**Minimum Rust:** every CI job uses the latest stable Rust. `rust-version` in `Cargo.toml` is the
+oldest Rust a release supports, and CI on a release tag also runs `mise run min-rust-check` with
+it. Between releases, Clippy flags standard-library APIs newer than `rust-version`, and Cargo's
+resolver keeps `cargo update` on dependency versions that support it. Raise it only when the code
+or a needed dependency requires a newer Rust.
 
 **Coverage** (`.github/workflows/coverage.yml`) runs `mise run coverage` on branch pushes, pull requests,
 and manual dispatches, retaining **coverage-lcov** for seven days. Successful main-branch runs

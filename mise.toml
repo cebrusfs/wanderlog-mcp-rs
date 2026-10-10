@@ -15,6 +15,14 @@ run = [
   "cargo doc --workspace --no-deps --locked",
 ]
 
+[tasks.min-rust-check]
+description = "Check every target on the minimum Rust, rust-version in Cargo.toml (needs network); CI runs it on release tags"
+run = '''
+msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+rustup toolchain install "${msrv:?no rust-version in Cargo.toml}" --profile minimal
+RUSTUP_TOOLCHAIN="$msrv" cargo check --workspace --all-targets --all-features --locked
+'''
+
 [tasks.e2e]
 description = "Live tests with the stored session; writing tests create and permanently delete their own trips"
 run = "cargo test -p wanderlog-mcp --features live-tests --test e2e -- --ignored --nocapture --test-threads=1"
