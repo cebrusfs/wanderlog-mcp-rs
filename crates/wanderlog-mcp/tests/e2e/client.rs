@@ -1,7 +1,5 @@
-//! Live round-trip against a real, throwaway trip. Ignored by default; run with
-//! `WANDERLOG_E2E_TRIP_ID=<id> mise run e2e` (uses the stored session). Exercises every edit op
-//! family against Wanderlog in three atomic batches, verifying each through a fresh connection,
-//! and restores the trip at the end. The trip needs dates and at least one day.
+//! Library round trip on a new trip: every edit op family in three atomic batches, each verified
+//! through a fresh connection. A failure here points at the Wanderlog protocol, not at the tools.
 
 use std::collections::HashMap;
 
@@ -9,18 +7,18 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use wanderlog_mcp::edit::{self, Edit, PlanContext};
 use wanderlog_mcp::sharedb::{Connection, Snapshot};
-use wanderlog_mcp::{auth, dates, rest::Rest, trip};
+use wanderlog_mcp::{dates, trip};
 
-struct Live {
-    cookie: String,
+use crate::{Account, END, START};
+
+struct Live<'a> {
+    account: &'a Account,
     key: String,
-    rest: Rest,
-    user_id: u64,
 }
 
-impl Live {
+impl Live<'_> {
     async fn snapshot(&self) -> Result<Snapshot> {
-        let mut conn = Connection::open(&self.cookie, &self.key).await?;
+        let mut conn = Connection::open(&self.account.cookie, &self.key).await?;
         let snap = conn.subscribe().await;
         conn.close().await;
         snap
@@ -32,15 +30,20 @@ impl Live {
             .into_iter()
             .map(serde_json::from_value)
             .collect::<Result<_, _>>()?;
-        let places =
-            edit::prefetch_places(&self.rest, &edits, &mut HashMap::new(), HashMap::new()).await?;
-        let mut conn = Connection::open(&self.cookie, &self.key).await?;
+        let places = edit::prefetch_places(
+            &self.account.rest,
+            &edits,
+            &mut HashMap::new(),
+            HashMap::new(),
+        )
+        .await?;
+        let mut conn = Connection::open(&self.account.cookie, &self.key).await?;
         let snap = conn.subscribe().await?;
         let plan = edit::plan(
             &snap.doc,
             &edits,
             &PlanContext {
-                user_id: self.user_id,
+                user_id: self.account.user_id,
                 places: &places,
             },
         )?;
@@ -63,49 +66,41 @@ fn section_ids(doc: &Value) -> Vec<u64> {
 }
 
 #[tokio::test]
-#[ignore = "talks to wanderlog.com; needs WANDERLOG_E2E_TRIP_ID and a stored session"]
-async fn live_round_trip_restores_the_trip() -> Result<()> {
-    anyhow::ensure!(
-        std::env::var("WANDERLOG_E2E_ALLOW_WRITES").as_deref() == Ok("true"),
-        "live writes require explicit WANDERLOG_E2E_ALLOW_WRITES=true"
-    );
-
-    let trip_id: u64 = std::env::var("WANDERLOG_E2E_TRIP_ID")
-        .context("set WANDERLOG_E2E_TRIP_ID to a throwaway trip id")?
-        .parse()?;
-    let (cookie, _) = auth::load()?;
-    let rest = Rest::new(&cookie)?;
-    let user = rest
-        .current_user()
+#[ignore = "talks to wanderlog.com with the stored session"]
+async fn edit_ops_round_trip() -> Result<()> {
+    let account = Account::load().await?;
+    let geo_id = account
+        .rest
+        .geo_search("Tokyo")
         .await?
-        .context("stored session is not logged in")?;
-    let summary = rest
-        .trips()
-        .await?
-        .into_iter()
-        .find(|t| t.id == trip_id)
-        .context("trip not in this account")?;
-    ensure!(summary.editable, "trip is view-only");
+        .first()
+        .and_then(|g| g["id"].as_u64())
+        .context("destination search returned nothing")?;
+    let created = account.rest.create_trip(geo_id, "friends").await?;
+    let key = created["key"]
+        .as_str()
+        .context("trip without key")?
+        .to_owned();
     let live = Live {
-        user_id: user["id"].as_u64().context("user without id")?,
-        cookie,
-        key: summary.key.clone(),
-        rest,
+        account: &account,
+        key: key.clone(),
     };
+    account.delete_after(&key, round_trip(&live)).await
+}
 
-    let before = live.snapshot().await?;
-    let title = before.doc["title"]
-        .as_str()
-        .context("trip without title")?
-        .to_owned();
-    let start = before.doc["startDate"]
-        .as_str()
-        .context("trip needs dates")?
-        .to_owned();
-    let end = before.doc["endDate"]
-        .as_str()
-        .context("trip needs dates")?
-        .to_owned();
+async fn round_trip(live: &Live<'_>) -> Result<()> {
+    let title = crate::title();
+    let (start, end) = (START, END);
+    let before = live
+        .apply(vec![
+            json!({"op": "set_dates", "start_date": start, "end_date": end}),
+            json!({"op": "rename_trip", "title": title}),
+        ])
+        .await?;
+    ensure!(
+        before.doc["title"] == json!(title) && before.doc["endDate"] == json!(end),
+        "new trip not set up"
+    );
     let day_index = *trip::day_indices(&before.doc)
         .first()
         .context("trip needs a day")?;
@@ -114,6 +109,7 @@ async fn live_round_trip_restores_the_trip() -> Result<()> {
     let day_heading = day["heading"].as_str().unwrap_or("").to_owned();
     let marker = format!("e2e-{}", std::process::id());
     let place_id = live
+        .account
         .rest
         .autocomplete("Tokyo Tower", None)
         .await?
@@ -129,7 +125,7 @@ async fn live_round_trip_restores_the_trip() -> Result<()> {
             json!({"op": "add_checklist", "section": day_ref, "heading": marker, "items": ["a", "b"]}),
             json!({"op": "update_section", "section": day_ref, "heading": format!("{marker} day")}),
             json!({"op": "rename_trip", "title": format!("{title} {marker}")}),
-            json!({"op": "set_dates", "start_date": start, "end_date": dates::add(&end, 1)?}),
+            json!({"op": "set_dates", "start_date": start, "end_date": dates::add(end, 1)?}),
         ])
         .await?;
     ensure!(
@@ -137,7 +133,7 @@ async fn live_round_trip_restores_the_trip() -> Result<()> {
         "title not renamed"
     );
     ensure!(
-        after.doc["endDate"] == json!(dates::add(&end, 1)?),
+        after.doc["endDate"] == json!(dates::add(end, 1)?),
         "dates not extended"
     );
     let (_, place) = find_block(&after.doc, |b| {
@@ -176,7 +172,7 @@ async fn live_round_trip_restores_the_trip() -> Result<()> {
         "note not appended"
     );
 
-    // Batch 3: restore everything.
+    // Batch 3: undo batches 1 and 2.
     let restored = live
         .apply(vec![
             json!({"op": "remove_block", "block": place_ref}),

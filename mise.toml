@@ -16,8 +16,8 @@ run = [
 ]
 
 [tasks.e2e]
-description = "Live round-trip on a throwaway trip (needs WANDERLOG_E2E_TRIP_ID and a stored session)"
-run = "cargo test -p wanderlog-mcp --features live-tests --test e2e -- --ignored --nocapture"
+description = "Live tests with the stored session; writing tests create and permanently delete their own trips"
+run = "cargo test -p wanderlog-mcp --features live-tests --test e2e -- --ignored --nocapture --test-threads=1"
 
 [tasks.coverage]
 description = "Unit/mock line coverage as LCOV in $TMPDIR (requires llvm-tools-preview); excludes live e2e"

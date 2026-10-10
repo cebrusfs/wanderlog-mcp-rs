@@ -50,9 +50,26 @@ HTTP errors can instead contain HTML, so status must be checked before parsing J
 | Place photos | `POST /api/placePhotos/{place_id}` body `{place}` | `data[]` image keys → `block.imageKeys` |
 | Place metadata | `GET /api/places/metadata?placeIds=&listId={key}&listType=tripPlan&ensurePlaceDetailsAreFresh=true&includeNeedsBooking=true` | description, `minMinutesSpent`/`maxMinutesSpent`, categories |
 | Create trip | `POST /api/tripPlans` | body `{geoIds:[id], initialMapsPlaceIds:[], initialSections:null, initialEmailId:null, type:"plan", startDate, endDate, privacy:"friends", isMapEmbed:false, title:null, autogenerateItineraryOptions:null, language:"en"}` → `data{key, viewKey, id, title}` |
+| Move trip to trash | `DELETE /api/tripPlans/{key}` | `{success: true}`; the trip leaves `/api/tripPlans/home` |
+| Restore from trash | `POST /api/tripPlans/restore` body `{keys:[key]}` | from the frontend bundle only; never called |
+| Delete from trash | `POST /api/tripPlans/deleteFromTrash` body `{keys:[key]}` | `{success: true}`; permanent |
 
 The web app also calls `/api/tripPlans/{key}/settings`, `/api/recommendations/v2`,
 `/api/flights/*`, analytics and chat endpoints; none are needed here.
+
+### Trip deletion
+
+The three trash endpoints come from the
+[web app's frontend bundle](https://itin-compiled.azureedge.net/03e05897/compiled/main.7eba9da7f94524.js)
+(2026-10-10). The same day, one temporary trip was created, moved to the trash and deleted from
+it on a real account: every request returned HTTP 200 with `success: true`, and afterwards the
+trip was absent from `/api/tripPlans`, `/api/tripPlans/home` and `/api/user`. Where the web app
+lists the trash was not traced.
+
+Unverified: `GET /api/tripPlans/{key}?clientSchemaVersion=2` still returned HTTP 200 after the
+permanent delete. Its body was not inspected, so whether deletion revokes the trip key is
+unknown; treat a leaked key as live. Only the live test helper deletes trips; the library and
+the tools deliberately cannot.
 
 ### Place resolution verification
 

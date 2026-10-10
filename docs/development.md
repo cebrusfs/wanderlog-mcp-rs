@@ -36,9 +36,14 @@ ops), rendering, and the tool schemas (flat JSON objects, no `$ref`/`oneOf`, for
 HTTP and WebSocket tests use local mock servers, and a CLI test drives the built binary over stdio
 with a synthetic cookie. The live integration target requires the `live-tests` feature, so `check`
 never builds it; the Keychain round trip (synthetic account) requires `native-keychain-tests`.
-For optional live validation, set `WANDERLOG_E2E_TRIP_ID` to your own throwaway trip with dates,
-authenticate locally, and run `mise run e2e`. That task talks to Wanderlog and restores the trip
-after its round-trip; it is never invoked by CI.
+For optional live validation, authenticate locally and run `mise run e2e`; CI never runs it. It
+uses the stored session (or `WANDERLOG_COOKIE`) and needs no trip: each writing test creates a
+trip titled `wanderlog-mcp e2e <pid>`, edits it, then moves it to the trash and deletes it
+permanently, also when the test fails. One test runs every edit op family through the client
+library; another drives the built server's tools over stdio (create, read, apply with
+`base_revision`, a refused stale apply). A read-only test renders every trip in the account with
+`get_trip`. Both server tests check that no trip key or the cookie reaches the MCP output. A panic
+or a killed run can leave a test trip behind; delete it in the web app.
 
 The [packaging guide](desktop.md#build-and-verify) describes artifact verification separately
 from live account and desktop UI testing.
