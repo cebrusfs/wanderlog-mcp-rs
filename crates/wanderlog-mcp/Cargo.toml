@@ -9,7 +9,6 @@ homepage.workspace = true
 readme = "README.md"
 include = ["Cargo.toml", "README.md", "LICENSE", "NOTICE", "src/**", "tests/**"]
 description = "Local stdio MCP server and CLI for the unofficial Wanderlog client"
-documentation = "https://docs.rs/wanderlog-mcp"
 keywords = ["wanderlog", "mcp", "travel", "cli"]
 categories = ["command-line-utilities"]
 
@@ -43,14 +42,6 @@ tokio-tungstenite.workspace = true
 tempfile = "3.27.0"
 
 [[test]]
-name = "e2e"
-path = "tests/e2e/main.rs"
-required-features = ["live-tests"]
-
-[[test]]
 name = "native_keychain"
 path = "tests/native_keychain.rs"
 required-features = ["native-keychain-tests"]
-
-[package.metadata.docs.rs]
-targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]

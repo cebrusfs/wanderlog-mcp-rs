@@ -10,7 +10,8 @@ The repository is a Cargo workspace with two crates:
 
 - `crates/wanderlog-client`: REST and ShareDB clients, trip models, rendering, JSON0 and edit
   planning. Callers supply the session; it has no MCP, CLI or credential-store dependency.
-- `crates/wanderlog-mcp`: the stdio MCP server, the CLI and Keychain session storage.
+- `crates/wanderlog-mcp`: the stdio MCP server, the CLI and Keychain session storage. It is a
+  binary only; code that wants to talk to Wanderlog builds on `wanderlog-client`.
 
 - **Reads** use Wanderlog's REST endpoints (trip list, trip, place search/details).
 - **Edits** go through ShareDB, the realtime engine behind Wanderlog's live collaboration: each
@@ -35,14 +36,14 @@ mise run package        # macOS packages + archive/stdio smoke checks; requires 
 Unit tests cover the json0 engine, the edit planner (component shapes mirror captured web-client
 ops), rendering, and the tool schemas (flat JSON objects, no `$ref`/`oneOf`, for OpenAI clients).
 HTTP and WebSocket tests use local mock servers, and a CLI test drives the built binary over stdio
-with a synthetic cookie. The live integration target requires the `live-tests` feature, so `check`
-never builds it; the Keychain round trip (synthetic account) requires `native-keychain-tests`.
+with a synthetic cookie. The live tests are compiled only with the `live-tests` feature, so `check`
+never builds them; the Keychain round trip (synthetic account) requires `native-keychain-tests`.
 For optional live validation, authenticate locally and run `mise run e2e`; CI never runs it. It
 uses the stored session (or `WANDERLOG_COOKIE`) and needs no trip: each writing test creates a
 trip titled `wanderlog-mcp e2e <pid>`, edits it, then moves it to the trash and deletes it
 permanently, also when the test fails. One test runs every edit op family through the client
-library; another drives the built server's tools over stdio (create, read, apply with
-`base_revision`, a refused stale apply). A read-only test renders every trip in the account with
+library; another drives the server's tools over the MCP protocol in process (create, read, apply
+with `base_revision`, a refused stale apply). A read-only test renders every trip in the account with
 `get_trip`. Both server tests check that no trip key or the cookie reaches the MCP output. A panic
 or a killed run can leave a test trip behind; delete it in the web app.
 

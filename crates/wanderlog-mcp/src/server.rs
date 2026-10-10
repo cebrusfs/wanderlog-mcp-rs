@@ -19,12 +19,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use crate::edit::{self, Edit, PlaceInfo, PlaceKey, PlanContext};
-use crate::render::{self, Options, quote};
-use crate::rest::{RateLimited, Rest, TripSummary};
-use crate::sharedb::{Connection, OutcomeUnknown, Snapshot};
+use wanderlog_client::edit::{self, Edit, PlaceInfo, PlaceKey, PlanContext};
+use wanderlog_client::errors::OutcomeUnknown;
+use wanderlog_client::render::{self, Options, quote};
+use wanderlog_client::rest::{RateLimited, Rest, TripSummary};
+use wanderlog_client::sharedb::{Connection, Snapshot};
+use wanderlog_client::{dates, trip};
+
 use crate::timing::Timing;
-use crate::{dates, trip};
 
 const INSTRUCTIONS: &str = "Wanderlog trip planner. Workflow: list_trips → get_trip (sections [s:<id>], items [b:<id>] \
 with 1-based positions, current revision) → apply_edits (one atomic \
@@ -46,7 +48,7 @@ const MAX_TITLE_CHARS: usize = 100;
 /// New trips get the web app's default sharing level ("friends"); change it in the app if needed.
 const NEW_TRIP_PRIVACY: &str = "friends";
 
-/// Explicit transport injection for embedding and offline application tests.
+/// Endpoints and timeout; tests point them at local servers.
 #[derive(Clone)]
 pub struct TransportOptions {
     /// REST origin.
@@ -59,9 +61,9 @@ pub struct TransportOptions {
 impl Default for TransportOptions {
     fn default() -> Self {
         Self {
-            rest_base: crate::rest::BASE.to_owned(),
-            websocket_base: crate::sharedb::WS_BASE.to_owned(),
-            timeout: crate::sharedb::TIMEOUT,
+            rest_base: wanderlog_client::rest::BASE.to_owned(),
+            websocket_base: wanderlog_client::sharedb::WS_BASE.to_owned(),
+            timeout: wanderlog_client::sharedb::TIMEOUT,
         }
     }
 }

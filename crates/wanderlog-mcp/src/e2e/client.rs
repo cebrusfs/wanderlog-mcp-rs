@@ -5,11 +5,11 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use wanderlog_mcp::edit::{self, Edit, PlanContext};
-use wanderlog_mcp::sharedb::{Connection, Snapshot};
-use wanderlog_mcp::{dates, trip};
+use wanderlog_client::edit::{self, Edit, PlanContext};
+use wanderlog_client::sharedb::{Connection, Snapshot};
+use wanderlog_client::{dates, trip};
 
-use crate::{Account, END, START};
+use super::{Account, END, START};
 
 struct Live<'a> {
     account: &'a Account,
@@ -89,7 +89,7 @@ async fn edit_ops_round_trip() -> Result<()> {
 }
 
 async fn round_trip(live: &Live<'_>) -> Result<()> {
-    let title = crate::title();
+    let title = super::title();
     let (start, end) = (START, END);
     let before = live
         .apply(vec![

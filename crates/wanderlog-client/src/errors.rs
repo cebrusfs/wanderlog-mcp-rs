@@ -1,4 +1,4 @@
-//! Typed errors carried by compatibility-preserving anyhow::Result APIs.
+//! Typed errors inside the `anyhow::Error`s this crate returns; downcast to tell them apart.
 /// A write whose result was not confirmed: it may or may not have been applied. Holds the
 /// redacted reason.
 #[derive(Debug)]

@@ -202,7 +202,7 @@ fn blind_retries_are_refused() {
 #[tokio::test]
 async fn redaction_ignores_degenerate_keys_and_handles_case() {
     let server = offline_server(true);
-    let summary = |id: u64, key: &str| crate::rest::TripSummary {
+    let summary = |id: u64, key: &str| wanderlog_client::rest::TripSummary {
         id,
         key: key.into(),
         editable: true,

@@ -25,7 +25,7 @@ RUSTUP_TOOLCHAIN="$msrv" cargo check --workspace --all-targets --all-features --
 
 [tasks.e2e]
 description = "Live tests with the stored session; writing tests create and permanently delete their own trips"
-run = "cargo test -p wanderlog-mcp --features live-tests --test e2e -- --ignored --nocapture --test-threads=1"
+run = "cargo test -p wanderlog-mcp --features live-tests --bin wanderlog-mcp e2e:: -- --ignored --nocapture --test-threads=1"
 
 [tasks.coverage]
 description = "Unit/mock line coverage as LCOV in $TMPDIR (requires llvm-tools-preview); excludes live e2e"

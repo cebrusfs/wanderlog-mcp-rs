@@ -27,7 +27,7 @@ const COLLECTION: &str = "TripPlans";
 /// tripmates' ops keep arriving and must not extend the wait.
 pub const TIMEOUT: Duration = Duration::from_secs(20);
 
-pub use crate::errors::{OutcomeUnknown, RevisionConflict};
+use crate::errors::{OutcomeUnknown, RevisionConflict};
 
 /// A trip document at a known ShareDB version.
 pub struct Snapshot {

@@ -1,6 +1,6 @@
 //! Application credentials; no plaintext persistent fallback outside macOS.
 use anyhow::{Result, anyhow, bail};
-pub use wanderlog_client::session::normalize;
+use wanderlog_client::session::normalize;
 /// Environment variable that injects a session instead of the stored one.
 pub const ENV_VAR: &str = "WANDERLOG_COOKIE";
 /// Where the session came from.

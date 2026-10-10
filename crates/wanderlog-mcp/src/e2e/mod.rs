@@ -1,5 +1,5 @@
-//! Live tests against wanderlog.com with the stored session (or `WANDERLOG_COOKIE`). Ignored by
-//! default; run with `mise run e2e`, which runs them one at a time. Each writing test creates its
+//! Live tests against wanderlog.com with the stored session (or `WANDERLOG_COOKIE`). Built only
+//! with the `live-tests` feature and ignored by default; `mise run e2e` runs them one at a time. Each writing test creates its
 //! own trip, titled `wanderlog-mcp e2e <pid>`, then moves it to the trash and deletes it
 //! permanently, also when the test fails; only a panic or a killed run leaves one behind.
 
@@ -11,8 +11,10 @@ use std::sync::OnceLock;
 use anyhow::{Context, Result, anyhow, ensure};
 use reqwest::header::{COOKIE, ORIGIN};
 use serde_json::{Value, json};
-use wanderlog_mcp::rest::{BASE, Rest};
-use wanderlog_mcp::{USER_AGENT, auth};
+use wanderlog_client::USER_AGENT;
+use wanderlog_client::rest::{BASE, Rest};
+
+use crate::auth;
 
 /// First and last day of every test trip; any fixed dates work.
 const START: &str = "2030-03-01";

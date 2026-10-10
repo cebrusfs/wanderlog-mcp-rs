@@ -6,8 +6,17 @@ use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 
-use wanderlog_mcp::server::{Detail, TripArgs, WanderlogServer, serve_stdio};
-use wanderlog_mcp::{auth, rest::Rest};
+use server::{Detail, TripArgs, WanderlogServer, serve_stdio};
+use wanderlog_client::rest::Rest;
+use wanderlog_client::session::normalize;
+
+mod auth;
+#[cfg(all(test, feature = "live-tests"))]
+mod e2e;
+mod server;
+#[cfg(test)]
+mod test_support;
+mod timing;
 
 #[derive(Parser)]
 #[command(
@@ -140,7 +149,7 @@ async fn auth_set() -> Result<()> {
         std::io::stdin().read_to_string(&mut buf)?;
         buf
     };
-    let cookie = auth::normalize(&raw)?;
+    let cookie = normalize(&raw)?;
     let user = Rest::new(&cookie)?
         .current_user()
         .await?

@@ -1,23 +1,26 @@
-//! The stdio server as an agent drives it: a short edit flow on a trip it creates itself, and a
+//! The MCP server as an agent drives it: a short edit flow on a trip it creates itself, and a
 //! read-only pass over every trip in the account. Both check that no trip key or the session
-//! cookie reaches the protocol stream. The edit-op matrix itself is covered by `client`.
+//! cookie reaches the protocol stream. The edit-op matrix itself is covered by `client`; the stdio
+//! wiring of the binary by the offline `cli_stdio` test.
 
-use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+use rmcp::ServiceExt;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use wanderlog_mcp::auth;
+use tokio::io::{
+    AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines, ReadHalf, WriteHalf,
+};
+use tokio::task::JoinHandle;
 
-use crate::{Account, END, START};
+use super::{Account, END, START};
+use crate::server::WanderlogServer;
 
-/// A `wanderlog-mcp serve` child process; the cookie goes in by environment, not the Keychain.
+/// The server in process, spoken to over an in-memory pipe exactly as a client speaks over stdio.
 struct Server {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: Lines<BufReader<ChildStdout>>,
+    task: JoinHandle<Result<()>>,
+    writer: WriteHalf<DuplexStream>,
+    lines: Lines<BufReader<ReadHalf<DuplexStream>>>,
     next_id: u64,
     /// Every line the server wrote, for the secret check.
     transcript: String,
@@ -39,17 +42,22 @@ impl Reply {
 
 impl Server {
     async fn start(cookie: &str) -> Result<Self> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_wanderlog-mcp"))
-            .arg("serve")
-            .env(auth::ENV_VAR, cookie)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
+        let (client, server_end) = tokio::io::duplex(1 << 20);
+        let cookie = cookie.to_owned();
+        let server = WanderlogServer::new(move || Ok(cookie.clone()), false);
+        let task = tokio::spawn(async move {
+            let service = server
+                .serve(tokio::io::split(server_end))
+                .await
+                .context("MCP handshake failed")?;
+            service.waiting().await.context("MCP server stopped")?;
+            Ok(())
+        });
+        let (reader, writer) = tokio::io::split(client);
         let mut server = Self {
-            stdin: child.stdin.take().context("no stdin")?,
-            stdout: BufReader::new(child.stdout.take().context("no stdout")?).lines(),
-            child,
+            task,
+            writer,
+            lines: BufReader::new(reader).lines(),
             next_id: 0,
             transcript: String::new(),
         };
@@ -66,7 +74,7 @@ impl Server {
     }
 
     async fn send(&mut self, message: &Value) -> Result<()> {
-        self.stdin
+        self.writer
             .write_all(format!("{message}\n").as_bytes())
             .await?;
         Ok(())
@@ -78,10 +86,10 @@ impl Server {
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
             .await?;
         loop {
-            let line = tokio::time::timeout(Duration::from_secs(120), self.stdout.next_line())
+            let line = tokio::time::timeout(Duration::from_secs(120), self.lines.next_line())
                 .await
                 .with_context(|| format!("{method}: no answer within 120 s"))??
-                .with_context(|| format!("{method}: server exited"))?;
+                .with_context(|| format!("{method}: server stopped"))?;
             self.transcript.push_str(&line);
             self.transcript.push('\n');
             let message: Value = serde_json::from_str(&line)?;
@@ -125,12 +133,13 @@ impl Server {
         Ok(())
     }
 
-    async fn stop(mut self) -> Result<()> {
-        drop(self.stdin);
-        let status = tokio::time::timeout(Duration::from_secs(10), self.child.wait())
+    /// Close the pipe as a client disconnecting would; the server must then stop cleanly.
+    async fn stop(self) -> Result<()> {
+        drop(self.writer);
+        drop(self.lines);
+        tokio::time::timeout(Duration::from_secs(10), self.task)
             .await
-            .context("server did not exit after stdin closed")??;
-        ensure!(status.success(), "server exited with {status}");
+            .context("server did not stop after the client disconnected")???;
         Ok(())
     }
 }
@@ -148,7 +157,7 @@ fn number_after(text: &str, prefix: &str) -> Option<u64> {
 async fn tools_edit_a_new_trip() -> Result<()> {
     let account = Account::load().await?;
     let mut server = Server::start(&account.cookie).await?;
-    let title = crate::title();
+    let title = super::title();
     let created = server
         .call(
             "create_trip",
