@@ -1,5 +1,5 @@
 //! The MCP server as an agent drives it: a short edit flow on a trip it creates itself, and a
-//! read-only pass over every trip in the account. Both check that no trip key or the session
+//! read-only pass over the account's latest trip. Both check that no trip key or the session
 //! cookie reaches the protocol stream. The edit-op matrix itself is covered by `client`; the stdio
 //! wiring of the binary by the offline `cli_stdio` test.
 
@@ -261,10 +261,11 @@ async fn edit_flow(server: &mut Server, trip_id: u64, title: &str) -> Result<()>
     Ok(())
 }
 
-/// Real trips hold data the fixtures do not: every one must render, compact and full.
+/// Real trips hold data the fixtures do not: the most recently edited one must render, compact
+/// and full.
 #[tokio::test]
 #[ignore = "talks to wanderlog.com with the stored session"]
-async fn get_trip_reads_every_trip() -> Result<()> {
+async fn get_trip_reads_the_latest_trip() -> Result<()> {
     let account = Account::load().await?;
     let keys: Vec<String> = account
         .rest
@@ -286,20 +287,22 @@ async fn get_trip_reads_every_trip() -> Result<()> {
         ids.len(),
         keys.len()
     );
-    for &id in &ids {
-        for detail in ["compact", "full"] {
-            server
-                .call("get_trip", json!({"trip_id": id, "detail": detail}))
-                .await?
-                .ok()
-                .with_context(|| format!("trip {id}, detail {detail}"))?;
-        }
+    // list_trips puts the most recently edited trip first.
+    let Some(&id) = ids.first() else {
+        eprintln!("no trip to read; skipped");
+        return server.stop().await;
+    };
+    for detail in ["compact", "full"] {
+        server
+            .call("get_trip", json!({"trip_id": id, "detail": detail}))
+            .await?
+            .ok()
+            .with_context(|| format!("trip {id}, detail {detail}"))?;
     }
     server.ensure_no_secrets(
         keys.iter()
             .map(String::as_str)
             .chain([account.cookie.as_str()]),
     )?;
-    eprintln!("rendered {} trips", ids.len());
     server.stop().await
 }

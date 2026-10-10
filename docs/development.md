@@ -43,9 +43,10 @@ uses the stored session (or `WANDERLOG_COOKIE`) and needs no trip: each writing 
 trip titled `wanderlog-mcp e2e <pid>`, edits it, then moves it to the trash and deletes it
 permanently, also when the test fails. One test runs every edit op family through the client
 library; another drives the server's tools over the MCP protocol in process (create, read, apply
-with `base_revision`, a refused stale apply). A read-only test renders every trip in the account with
-`get_trip`. Both server tests check that no trip key or the cookie reaches the MCP output. A panic
-or a killed run can leave a test trip behind; delete it in the web app.
+with `base_revision`, a refused stale apply). A read-only test checks that `list_trips` shows every
+trip in the account and renders the most recently edited one with `get_trip`. Both server tests
+check that no trip key or the cookie reaches the MCP output. A panic or a killed run can leave a
+test trip behind; delete it in the web app.
 
 The [packaging guide](desktop.md#build-and-verify) describes artifact verification separately
 from live account and desktop UI testing.
