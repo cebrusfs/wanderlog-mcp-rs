@@ -1,50 +1,104 @@
-name: Desktop packages
+name: Release
 
-# Publishing remains opt-in; ordinary CI builds downloadable packages automatically.
+# Pushing a v<version> tag checks, builds and attests the desktop packages, then drafts a GitHub
+# Release. Publishing that draft (a maintainer, in the GitHub UI) publishes the crates.
+# Process and one-time setup: docs/release.md.
 on:
-  workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish to GitHub Releases (requires selecting an existing version tag)
-        type: boolean
-        default: false
+  push:
+    tags: ["v*"]
+  release:
+    types: [published]
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-release-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   checks:
-    if: vars.ENABLE_RELEASE_WORKFLOW == 'true'
+    if: github.event_name == 'push' && github.repository == 'cebrusfs/wanderlog-mcp-rs'
     uses: ./.github/workflows/ci.yml
 
-  publish:
-    if: vars.ENABLE_RELEASE_WORKFLOW == 'true' && inputs.publish
+  draft:
+    name: Draft GitHub Release
     needs: checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     env:
-      RELEASE_TAG: ${{ needs.checks.outputs.package_tag }}
-      RELEASE_REF_TYPE: ${{ github.ref_type }}
-      RELEASE_REF_NAME: ${{ github.ref_name }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      PACKAGE_TAG: ${{ needs.checks.outputs.package_tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: desktop-macos-arm64
           path: ${{ runner.temp }}/release-assets
-      - name: Verify assets and publish the existing tag
+      - name: Verify the tag names the packaged version
+        working-directory: ${{ runner.temp }}/release-assets
         run: |
-          test "$RELEASE_REF_TYPE" = tag
-          test "$RELEASE_REF_NAME" = "$RELEASE_TAG"
-          cd "$RUNNER_TEMP/release-assets"
+          test "$RELEASE_TAG" = "$PACKAGE_TAG"
           sha256sum --check SHA256SUMS
-          tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags/$RELEASE_TAG" --jq .sha)
-          test "$tag_sha" = "$GITHUB_SHA"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/wanderlog-mcp-*
+      - name: Create the draft release
+        working-directory: ${{ runner.temp }}/release-assets
+        run: |
           gh release create "$RELEASE_TAG" ./*.mcpb ./*.zip ./SHA256SUMS \
-            --verify-tag --generate-notes --repo "$GITHUB_REPOSITORY"
+            --draft --verify-tag --generate-notes --repo "$GITHUB_REPOSITORY"
+
+  crates:
+    name: Publish crates
+    if: github.event_name == 'release' && github.repository == 'cebrusfs/wanderlog-mcp-rs'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      USER_AGENT: wanderlog-mcp-release (https://github.com/cebrusfs/wanderlog-mcp-rs)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      # Skipping versions that already exist keeps reruns and the manual first release green.
+      - name: Find crates not yet on crates.io
+        id: pending
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked |
+            jq -r '.packages[] | select(.name == "wanderlog-mcp") | .version')
+          test "$GITHUB_REF_NAME" = "v$version"
+          pending=""
+          for crate in wanderlog-client wanderlog-mcp; do
+            status=$(curl -sS -o /dev/null -w '%{http_code}' -A "$USER_AGENT" \
+              "https://crates.io/api/v1/crates/$crate/$version")
+            case "$status" in
+              200) echo "$crate $version is already published" ;;
+              404) pending="$pending $crate" ;;
+              *) echo "crates.io answered HTTP $status for $crate" >&2; exit 1 ;;
+            esac
+          done
+          echo "crates=${pending# }" >> "$GITHUB_OUTPUT"
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        if: steps.pending.outputs.crates != ''
+        id: auth
+      - name: Publish, library first
+        if: steps.pending.outputs.crates != ''
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CRATES: ${{ steps.pending.outputs.crates }}
+        run: |
+          for crate in $CRATES; do
+            cargo publish --locked -p "$crate"
+          done

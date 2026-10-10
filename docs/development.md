@@ -55,7 +55,7 @@ override the report path.
 
 ### GitHub Actions
 
-**CI** (`.github/workflows/ci.yml`) runs on pushes, pull requests, and manual dispatches using a
+**CI** (`.github/workflows/ci.yml`) runs on branch pushes, pull requests, and manual dispatches using a
 macOS runner. It calls `mise run ci` and the Keychain round trip, with no Wanderlog credentials or
 live API tests. A Linux and Windows job checks `wanderlog-client` on its own and fails if MCP, CLI
 or credential crates leak into its dependency tree. Dependency downloads remain available; there
@@ -64,7 +64,7 @@ is no firewall or network sandbox. After checks pass, it runs
 **desktop-macos-arm64** for seven days. See the [README](../README.md#desktop-packages-recommended)
 for downloading and installing these packages.
 
-**Coverage** (`.github/workflows/coverage.yml`) runs `mise run coverage` on pushes, pull requests,
+**Coverage** (`.github/workflows/coverage.yml`) runs `mise run coverage` on branch pushes, pull requests,
 and manual dispatches, retaining **coverage-lcov** for seven days. Successful main-branch runs
 upload that report to [Codecov](https://codecov.io/gh/cebrusfs/wanderlog-mcp-rs). Connect the public
 repository in Codecov before the first upload; no `CODECOV_TOKEN` secret is needed because the
@@ -73,17 +73,6 @@ upload job receives `id-token: write`; test jobs use read access, and pull reque
 The README badge shows main-branch line coverage after Codecov processes the first report.
 Upload failures fail the Coverage workflow; they do not block the separate CI/package workflow.
 
-**Desktop packages** (`.github/workflows/release.yml`) reuses CI's checks and packages for manual
-releases. This manual workflow remains **disabled by default**. To use it after the workflow
-reaches the default branch:
-
-1. Set the repository Actions variable `ENABLE_RELEASE_WORKFLOW` to `true`.
-2. Manually run **Desktop packages** with **publish** unchecked to run CI, build Apple Silicon
-   packages, and upload the same workflow artifact as ordinary CI.
-3. When ready to publish, first create and push an existing `v<version>` tag matching
-   `Cargo.toml`. Run the workflow from that tag with **publish** checked. After checks and
-   packaging pass, it verifies the tag still points at the built commit and creates a GitHub
-   Release with those assets. It does not create tags or overwrite an existing release.
-
-Tag pushes alone do not publish. Binaries remain generated artifacts, not repository files.
-The publishing job alone receives `contents: write`; checks and builds use read access.
+**Release** (`.github/workflows/release.yml`) runs on `v*` tags: it reuses CI, attests the
+packages and drafts a GitHub Release; publishing the draft publishes the crates. See
+[releasing](release.md). Only its release jobs receive write or OIDC permissions.

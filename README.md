@@ -30,13 +30,14 @@ Choose the setup for your client:
 
 ### Desktop packages (recommended)
 
-Download **desktop-macos-arm64** from the **Artifacts** section of a successful
-[main-branch CI run](https://github.com/cebrusfs/wanderlog-mcp-rs/actions/workflows/ci.yml?query=branch%3Amain).
-GitHub requires signing in to download workflow artifacts; they are retained for seven days.
-Extract the download to access the `.mcpb`, OpenAI `.zip`, and `SHA256SUMS` files. From that folder,
-you can verify the archives with `shasum -a 256 -c SHA256SUMS`.
+Download the `.mcpb` or OpenAI `.zip` and `SHA256SUMS` from the
+[latest release](https://github.com/cebrusfs/wanderlog-mcp-rs/releases/latest). Verify them with
+`shasum -a 256 -c SHA256SUMS --ignore-missing`, or check their build provenance with
+`gh attestation verify <file> -R cebrusfs/wanderlog-mcp-rs`.
 
-For Intel Macs or when no recent CI artifact is available, [build packages locally](#build-packages-locally).
+Unreleased builds are available as **desktop-macos-arm64** in the **Artifacts** section of a
+successful [main-branch CI run](https://github.com/cebrusfs/wanderlog-mcp-rs/actions/workflows/ci.yml?query=branch%3Amain)
+(sign-in required, kept for seven days). For Intel Macs, [build packages locally](#build-packages-locally).
 The packages contain the server binary, so they need no Rust or Bun at runtime.
 
 | Output | Use |
@@ -102,10 +103,11 @@ If you prefer an installed binary and manual MCP registration, install
 [Rust](https://www.rust-lang.org/tools/install) (minimum version in `Cargo.toml`), then run:
 
 ```sh
-git clone https://github.com/cebrusfs/wanderlog-mcp-rs.git
-cd wanderlog-mcp-rs
-cargo install --path crates/wanderlog-mcp --locked
+cargo install wanderlog-mcp --locked
 ```
+
+To build the current source instead, clone the repository and run
+`cargo install --path crates/wanderlog-mcp --locked`.
 
 This installs `wanderlog-mcp` into `~/.cargo/bin` by default and does not require Bun or mise.
 
@@ -183,7 +185,7 @@ See the [tool reference](docs/tools.md) for supported edits and the safety model
 ## Documentation
 
 - [Tool reference and safety model](docs/tools.md)
-- [Development, checks, and releases](docs/development.md)
+- [Development and checks](docs/development.md) and [releasing](docs/release.md)
 - [Desktop packaging reference](docs/desktop.md)
 - [Wanderlog protocol reference](docs/protocol.md)
 - [Privacy](PRIVACY.md), [security reports](SECURITY.md) and [contributing](CONTRIBUTING.md)
