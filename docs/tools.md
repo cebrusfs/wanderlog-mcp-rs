@@ -77,8 +77,10 @@ Content limits and new-trip sharing defaults are listed in the [user guide](../R
   share links.
 - **Writes are explicit.** Read tools carry the read-only annotation and `apply_edits` the
   destructive one, so clients that honour MCP annotations ask before running it (Claude Code asks
-  per tool unless you allow it). The intended flow is `preview_edits` (dry run, shows the exact
-  changes and a `base_revision`) → the user agrees to the goal → one `apply_edits` call for the
-  whole batch with that `base_revision`. If the trip changed in between — a tripmate's edit, or an
+  per tool unless you allow it); that approval is the authorization. The default flow is
+  `get_trip`, which reports the current revision, then one `apply_edits` call for the whole batch
+  with that revision as `base_revision`. If the trip changed in between — a tripmate's edit, or an
   earlier attempt of the same call — nothing is applied, so retries cannot double-apply.
+  `preview_edits` shows the exact changes without writing, for when the user wants to review them
+  first; it costs an extra call and connection.
 - For a server with all writes disabled, use the [read-only setup](../README.md#cli-installation-alternative).

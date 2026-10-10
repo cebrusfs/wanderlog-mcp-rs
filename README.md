@@ -160,7 +160,8 @@ Try asking your assistant:
 
 - “List my Wanderlog trips and show the itinerary for my Tokyo trip.”
 - “Find ramen places near this trip's destination.”
-- “Preview adding Tokyo Tower to the second day, then wait for my confirmation.”
+- “Add Tokyo Tower to the second day of my Tokyo trip.”
+- “Preview moving the museums to day three, then wait for my confirmation.”
 
 You can also browse from the terminal:
 
@@ -179,7 +180,7 @@ See the [tool reference](docs/tools.md) for supported edits and the safety model
 - **Keychain access prompt:** allow the server to access its stored session; reinstalling can trigger another prompt.
 - **Rate limited:** wait for the reported retry delay, or at least a minute if none is given;
   batch related edits together.
-- **Trip changed since preview:** ask for a new preview before applying edits.
+- **Trip changed meanwhile:** nothing was applied; read the trip again before retrying.
 - **Edit outcome unknown:** check the trip before retrying to avoid duplicate changes.
 - **Slow responses:** set `WANDERLOG_MCP_TIMING=1` in the server's environment to log where each
   tool call spends its time (see [timing](docs/development.md#timing)).
