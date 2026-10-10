@@ -27,11 +27,11 @@ their tag.
 
 - **Immutable releases:** enable them in the repository settings before the first release.
 - **First crates.io release:** crates.io only accepts Trusted Publishing for crates that already
-  exist, so publish the first version by hand from the tagged commit, before publishing the draft:
+  exist, so publish the first version by hand from the tagged commit, before publishing the draft
+  (Cargo publishes `wanderlog-client` first):
 
   ```sh
-  cargo publish --locked -p wanderlog-client
-  cargo publish --locked -p wanderlog-mcp
+  cargo publish --workspace --locked
   ```
 
   Use a crates.io API token scoped to publishing and revoke it afterwards. Then, for each crate on
