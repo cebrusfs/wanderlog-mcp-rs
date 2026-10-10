@@ -186,3 +186,9 @@ See the [tool reference](docs/tools.md) for supported edits and the safety model
 - [Development, checks, and releases](docs/development.md)
 - [Desktop packaging reference](docs/desktop.md)
 - [Wanderlog protocol reference](docs/protocol.md)
+- [Privacy](PRIVACY.md), [security reports](SECURITY.md) and [contributing](CONTRIBUTING.md)
+
+## License
+
+[Apache-2.0](LICENSE). This is an unofficial integration, not affiliated with Wanderlog; see
+[NOTICE](NOTICE). Desktop packages include the license texts of their dependencies.

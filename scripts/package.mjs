@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { getMcpConfigForManifest, packExtension, unpackExtension } from "@anthropic-ai/mcpb";
 import Ajv2020 from "ajv/dist/2020.js";
+import { thirdPartyNotices } from "./third-party-notices.mjs";
 
 // Cargo owns package identity; both client adapters wrap the same release binary.
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -100,14 +101,19 @@ run("cargo", ["build", "--package", name, "--release", "--locked", "--target", t
 const binary = join(metadata.target_directory, target, "release", name);
 assert.equal(run("/usr/bin/lipo", ["-archs", binary]), process.arch === "x64" ? "x86_64" : "arm64");
 const expectedTools = await smoke(binary, args, repo, version);
+const notices = thirdPartyNotices(repo, target, name);
+console.log(`Third-party notices: ${notices.count} crates`);
 const output = mkdtempSync(join(tmpdir(), `${name}-packages-`));
 const staging = mkdtempSync(join(tmpdir(), `${name}-staging-`));
 
+// Each bundle carries the binary with the license, notice and dependency texts it requires.
 function copyBinary(root) {
   const destination = join(root, entryPoint);
   mkdirSync(dirname(destination), { recursive: true });
   copyFileSync(binary, destination);
   chmodSync(destination, 0o755);
+  for (const file of ["LICENSE", "NOTICE"]) copyFileSync(join(repo, file), join(root, file));
+  writeFileSync(join(root, "THIRD_PARTY_NOTICES.txt"), notices.text);
 }
 
 try {
@@ -124,7 +130,7 @@ try {
       },
     },
     compatibility: { platforms: ["darwin"] },
-    privacy_policies: ["https://wanderlog.com/privacy"],
+    privacy_policies: ["https://github.com/cebrusfs/wanderlog-mcp-rs/blob/main/PRIVACY.md"],
     tools: expectedTools.map(({ name, description }) => ({ name, description })),
     user_config: {
       cookie: {
@@ -161,7 +167,7 @@ try {
     plugins: [{ name, source: { source: "local", path: `./plugins/${name}` },
       policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" }, category: "Productivity" }],
   });
-  for (const path of ["README.md", "docs/tools.md", "docs/development.md", "docs/desktop.md", "docs/protocol.md"]) {
+  for (const path of ["README.md", "LICENSE", "NOTICE", "PRIVACY.md", "docs/tools.md", "docs/development.md", "docs/desktop.md", "docs/protocol.md"]) {
     mkdirSync(dirname(join(marketplace, path)), { recursive: true });
     copyFileSync(join(repo, path), join(marketplace, path));
   }

@@ -29,8 +29,11 @@ adapter includes a credential or the build machine's absolute path.
 
 ## Build and verify
 
-`crates/wanderlog-mcp/Cargo.toml` owns the name and description; the workspace `Cargo.toml` owns the version. `scripts/package.mjs` generates both client
-manifests, derives Claude's tool metadata from the compiled server, and copies that one binary.
+`crates/wanderlog-mcp/Cargo.toml` owns the name and description; the workspace `Cargo.toml` owns
+the version. `scripts/package.mjs` generates both client manifests, derives Claude's tool metadata
+from the compiled server, and copies that one binary with `LICENSE`, `NOTICE` and
+`THIRD_PARTY_NOTICES.txt`. The notices hold the license texts of every crate compiled into the
+binary; generation fails if one is missing (see [pinned texts](../third-party-licenses/README.md)).
 It validates MCPB with the pinned official packer and OpenAI manifests against the versioned
 [Agent Plugins schemas](https://agent-plugins.org/specification). Packaging requires network
 access to fetch those schemas and any missing locked dependencies.
