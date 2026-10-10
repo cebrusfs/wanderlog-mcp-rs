@@ -53,6 +53,19 @@ the repository so reports are portable between runners. It writes line coverage 
 `$TMPDIR/wanderlog-mcp-lcov.info` and fails below 90% line coverage. Set `COVERAGE_FILE` to
 override the report path.
 
+### Timing
+
+With `WANDERLOG_MCP_TIMING=1` in its environment, the server writes one line per tool call to
+stderr, which MCP clients keep in their server logs, for example:
+
+```text
+wanderlog-mcp timing: apply_edits lookup=0ms places=0ms connect=640ms plan=1ms submit=180ms close=0ms total=822ms
+```
+
+`lookup` covers the cached trip list and session, `fetch` the REST trip read, `connect` opening
+the edit channel and downloading the trip, `submit` waiting for Wanderlog's acknowledgement. Lines
+contain no trip keys, cookies or trip content.
+
 ### GitHub Actions
 
 **CI** (`.github/workflows/ci.yml`) runs on branch pushes, pull requests, and manual dispatches using a

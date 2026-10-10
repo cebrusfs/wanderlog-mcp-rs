@@ -181,6 +181,8 @@ See the [tool reference](docs/tools.md) for supported edits and the safety model
   batch related edits together.
 - **Trip changed since preview:** ask for a new preview before applying edits.
 - **Edit outcome unknown:** check the trip before retrying to avoid duplicate changes.
+- **Slow responses:** set `WANDERLOG_MCP_TIMING=1` in the server's environment to log where each
+  tool call spends its time (see [timing](docs/development.md#timing)).
 
 ## Documentation
 

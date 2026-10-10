@@ -23,6 +23,7 @@ use crate::edit::{self, Edit, PlaceInfo, PlaceKey, PlanContext};
 use crate::render::{self, Options, quote};
 use crate::rest::{RateLimited, Rest, TripSummary};
 use crate::sharedb::{Connection, OutcomeUnknown, Snapshot};
+use crate::timing::Timing;
 use crate::{dates, trip};
 
 const INSTRUCTIONS: &str = "Wanderlog trip planner. Workflow: list_trips → get_trip (sections [s:<id>], items [b:<id>] \
@@ -489,6 +490,7 @@ impl WanderlogServer {
 
     /// Text of the list_trips tool (also used by the CLI).
     pub async fn list_trips_impl(&self) -> Result<String> {
+        let _timing = Timing::start("list_trips");
         let mut trips = self.refresh_trips().await?;
         trips.sort_by(|a, b| b.edited_at.cmp(&a.edited_at));
         if trips.is_empty() {
@@ -520,9 +522,12 @@ impl WanderlogServer {
 
     /// Text of the get_trip tool (also used by the CLI).
     pub async fn get_trip_impl(&self, args: TripArgs) -> Result<String> {
+        let mut timing = Timing::start("get_trip");
         let session = self.session().await?;
         let trip = self.trip(args.trip_id).await?;
+        timing.stage("lookup");
         let payload = session.rest.trip(&trip.key).await?;
+        timing.stage("fetch");
         self.remember_geo(trip.id, &payload).await;
         let doc = payload
             .get("tripPlan")
@@ -567,6 +572,7 @@ impl WanderlogServer {
     }
 
     async fn search_places_impl(&self, args: SearchArgs) -> Result<String> {
+        let _timing = Timing::start("search_places");
         ensure!(!args.query.trim().is_empty(), "query must not be empty");
         let rest = self.rest().await?;
         let near = match args.trip_id {
@@ -614,6 +620,7 @@ impl WanderlogServer {
     }
 
     async fn get_place_impl(&self, args: PlaceArgs) -> Result<String> {
+        let _timing = Timing::start("get_place");
         let session = self.session().await?;
         let rest = &session.rest;
         let place_id = args.place_id.trim();
@@ -772,6 +779,11 @@ impl WanderlogServer {
         if apply {
             self.ensure_writable()?;
         }
+        let mut timing = Timing::start(if apply {
+            "apply_edits"
+        } else {
+            "preview_edits"
+        });
         edit::check_batch(&args.edits)?;
         let trip = self
             .editable_trip(args.trip_id)
@@ -790,20 +802,26 @@ impl WanderlogServer {
         }
         let session = self.session().await?;
         let user_id = self.user_id().await.context(BeforeWrite("check_user"))?;
+        timing.stage("lookup");
         let places = self
             .places_for(&session, &args.edits)
             .await
             .context(BeforeWrite("resolve_places"))?;
+        timing.stage("places");
         let (mut conn, snapshot) = self.connect(&session.cookie, &trip.key).await?;
+        timing.stage("connect");
         let result = async {
             if let (true, Some(base)) = (apply, args.base_revision) {
                 snapshot.validate_revision(base)?;
             }
             let plan = edit::plan(&snapshot.doc, &args.edits, &PlanContext { user_id, places: &places })?;
+            timing.stage("plan");
             let mut out = String::new();
             let changed = !plan.components.is_empty();
             if apply && changed {
-                let applied_at = match conn.submit(snapshot.version, &plan.components).await {
+                let submitted = conn.submit(snapshot.version, &plan.components).await;
+                timing.stage("submit");
+                let applied_at = match submitted {
                     Ok(at) => at,
                     Err(e) => {
                         if e.downcast_ref::<OutcomeUnknown>().is_some() {
@@ -843,10 +861,12 @@ impl WanderlogServer {
         }
         .await;
         conn.close().await;
+        timing.stage("close");
         result
     }
 
     async fn create_trip_impl(&self, args: CreateTripArgs) -> Result<String> {
+        let _timing = Timing::start("create_trip");
         self.ensure_writable()?;
         // Validate everything before the trip exists, so a bad request never leaves an empty trip.
         let follow_up = create_trip_follow_up(&args)?;
