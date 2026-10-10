@@ -7,7 +7,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 // Crate archives that omit their license text. Each override is the unmodified upstream file,
-// pinned by crate version and SHA-256 (see third-party-licenses/README.md).
+// pinned by crate version and SHA-256 (see third-party-licenses/README.md next to this script).
 const OVERRIDES = new Map([
   ["rmcp 3.5.1", "rmcp-3.5.1.txt"],
   ["rmcp-macros 3.5.1", "rmcp-3.5.1.txt"],
@@ -52,7 +52,7 @@ export function thirdPartyNotices(repo, target, root = "wanderlog-mcp") {
     const override = OVERRIDES.get(`${p.name} ${p.version}`);
     let files;
     if (override) {
-      const path = join(repo, "third-party-licenses", override);
+      const path = join(repo, "scripts", "third-party-licenses", override);
       const digest = createHash("sha256").update(readFileSync(path)).digest("hex");
       assert.equal(digest, OVERRIDE_SHA256.get(override), `${override} differs from the pinned upstream text`);
       files = [path];
