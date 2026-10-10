@@ -5,6 +5,7 @@
 //! submit a single op → wait for its acknowledgement → close. An op submitted at an older version
 //! is transformed against concurrent edits by the server, so no client-side OT is needed.
 
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -15,7 +16,9 @@ use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::{self, Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+use tokio_tungstenite::{
+    Connector, MaybeTlsStream, WebSocketStream, connect_async_tls_with_config,
+};
 
 pub const WS_BASE: &str = "wss://wanderlog.com/api/tripPlans/wsOverall/";
 const COLLECTION: &str = "TripPlans";
@@ -85,7 +88,13 @@ impl Connection {
         headers.insert("origin", HeaderValue::from_static(crate::rest::BASE));
         headers.insert("user-agent", HeaderValue::from_static(crate::USER_AGENT));
 
-        let (ws, _) = tokio::time::timeout(timeout, connect_async(request))
+        let connector = if url.scheme() == "wss" {
+            tls_connector()?
+        } else {
+            Connector::Plain
+        };
+        let connect = connect_async_tls_with_config(request, None, false, Some(connector));
+        let (ws, _) = tokio::time::timeout(timeout, connect)
             .await
             .map_err(|_| anyhow!("timed out connecting to Wanderlog"))?
             .map_err(|e| {
@@ -301,6 +310,28 @@ fn error_text(error: &Value) -> String {
                 .map_or_else(|| other.to_string(), str::to_owned),
         ),
     }
+}
+
+/// TLS settings shared by every edit-channel connection, trusting the system root certificates.
+/// tungstenite would otherwise reload the roots for each connection (60–100 ms on macOS).
+fn tls_connector() -> Result<Connector> {
+    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    if let Some(config) = CONFIG.get() {
+        return Ok(Connector::Rustls(config.clone()));
+    }
+    let mut roots = rustls::RootCertStore::empty();
+    let (added, _) =
+        roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    ensure!(
+        added > 0,
+        "no usable system root certificates for Wanderlog's edit channel"
+    );
+    let config = Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    );
+    Ok(Connector::Rustls(CONFIG.get_or_init(|| config).clone()))
 }
 
 /// Error text without URLs (connection errors can embed the request URI, which holds the key).

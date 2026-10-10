@@ -61,3 +61,13 @@ async fn ack_wait_has_a_hard_deadline() {
         started.elapsed()
     );
 }
+
+#[test]
+fn tls_settings_are_built_once_per_process() {
+    let (Connector::Rustls(first), Connector::Rustls(second)) =
+        (tls_connector().unwrap(), tls_connector().unwrap())
+    else {
+        panic!("edit channel must use rustls");
+    };
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+}

@@ -24,6 +24,8 @@ httpdate.workspace = true
 rand.workspace = true
 percent-encoding.workspace = true
 reqwest.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
 schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
